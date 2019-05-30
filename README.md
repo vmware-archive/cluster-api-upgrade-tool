@@ -4,19 +4,36 @@
 
 ## Overview
 
+Cluster-api-upgrade-tool is a standalone library to orchestrate cluster upgrades using the v1alpha1 API version from Cluster API.
+Our goal is to ultimately add upgrade logic to Cluster API itself,
+and this will be worked on as part of the control plane and node lifecycle management workstreams.
+
+Note that cluster-api-upgrade-tool effort is still in the prototype stage. All of the code here is to experiment with the tool and demo its abilities, in order to drive more technical feedback.
+Please do not use this against production clusters.
+
+
 ## Try it out
+
+For the purpose of running this against an existing cluster,this project provides an experimental command line program to trigger the API's of this library
+
+Build: Run "go build" from the home directory of this project.
+
+Run the generated binary against an existing cluster.
+Example:
+
+./cluster-api-upgrade-tool --kubeconfig <Path to your management cluster kubeconfig file> \
+--ca-field spec.providerSpec.value.caKeyPair \
+--cluster-name <Name of your target cluster> \
+--cluster-namespace <target cluster namespace> \
+--kubernetes-version <New kubernetes version>
 
 ### Prerequisites
 
-* Prereq 1
-* Prereq 2
-* Prereq 3
+* Applicable for cluster created by cluster API
 
 ### Build & Run
 
-1. Step 1
-2. Step 2
-3. Step 3
+go build
 
 ## Documentation
 
@@ -28,3 +45,4 @@ signed as described on that page. Your signature certifies that you wrote the pa
 as an open-source patch. For more detailed information, refer to [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
+Apache 2.0
