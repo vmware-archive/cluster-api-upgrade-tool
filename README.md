@@ -1,41 +1,51 @@
-
-
 # cluster-api-upgrade-tool
+
+## WARNING
+
+This tool is a work in progress. It may have bugs. **DO NOT** use it on a production Kubernetes cluster or any cluster you can't live without.
+
+To date, we have only tested this with [Cluster API Provider for AWS](http://github.com/kubernetes-sigs/cluster-api-provider-aws) (CAPA)
 
 ## Overview
 
-Cluster-api-upgrade-tool is a standalone library to orchestrate cluster upgrades using the v1alpha1 API version from Cluster API.
-Our goal is to ultimately add upgrade logic to Cluster API itself,
-and this will be worked on as part of the control plane and node lifecycle management workstreams.
+This is a standalone tool to orchestrate upgrading Kubernetes clusters created by Cluster API v0.1.x / API version v1alpha1.
 
-Note that cluster-api-upgrade-tool effort is still in the prototype stage. All of the code here is to experiment with the tool and demo its abilities, in order to drive more technical feedback.
-Please do not use this against production clusters.
-
+Our goal is to ultimately add this upgrade logic to Cluster API itself, but given that v1alpha1 doesn't easily lend itself to
+handling upgrades of control plane machines, we decided to build a temporarily tool that can fill that gap. Once Cluster API
+supports full lifecycle management of both control planes and worker nodes, we plan to deprecate this tool.
 
 ## Try it out
-
-For the purpose of running this against an existing cluster,this project provides an experimental command line program to trigger the API's of this library
 
 Build: Run "go build" from the home directory of this project.
 
 Run the generated binary against an existing cluster.
 Example:
 
+````
 ./cluster-api-upgrade-tool --kubeconfig <Path to your management cluster kubeconfig file> \
---ca-field spec.providerSpec.value.caKeyPair \
---cluster-name <Name of your target cluster> \
---cluster-namespace <target cluster namespace> \
---kubernetes-version <New kubernetes version>
+  --ca-field spec.providerSpec.value.caKeyPair \
+  --cluster-namespace <target cluster namespace> \
+  --cluster-name <Name of your target cluster> \
+  --kubernetes-version <Desired kubernetes version>
+````
 
 ### Prerequisites
 
-* Applicable for cluster created by cluster API
+* Cluster created using Cluster API v0.1.x / API version v1alpha1
+* Nodes bootstrapped with kubeadm
+* Control plane Machine resources have the following labels:
+  * cluster.k8s.io/cluster-name=<cluster name>
+  * set=controlplane
+* Control plane is comprised of individual Machines
+* Worker nodes are from MachineDeployments
 
 ### Build & Run
 
 go build
 
 ## Documentation
+
+TODO
 
 ## Contributing
 
