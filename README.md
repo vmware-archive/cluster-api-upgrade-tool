@@ -34,8 +34,8 @@ Example:
 * Cluster created using Cluster API v0.1.x / API version v1alpha1
 * Nodes bootstrapped with kubeadm
 * Control plane Machine resources have the following labels:
-  * cluster.k8s.io/cluster-name=<cluster name>
-  * set=controlplane
+  * `cluster.k8s.io/cluster-name=<cluster name>`
+  * `set=controlplane`
 * Control plane is comprised of individual Machines
 * Worker nodes are from MachineDeployments
 
