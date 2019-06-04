@@ -1,5 +1,3 @@
-
-
 # Contributing to cluster-api-upgrade-tool
 
 The cluster-api-upgrade-tool project team welcomes contributions from the community. Before you start working with cluster-api-upgrade-tool, please
