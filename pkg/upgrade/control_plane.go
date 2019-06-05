@@ -23,13 +23,13 @@ import (
 
 const (
 	etcdCACertFile = "/etc/kubernetes/pki/etcd/ca.crt"
-	etcdCertFile = "/etc/kubernetes/pki/etcd/peer.crt"
-	etcdKeyFile = "/etc/kubernetes/pki/etcd/peer.key"
+	etcdCertFile   = "/etc/kubernetes/pki/etcd/peer.crt"
+	etcdKeyFile    = "/etc/kubernetes/pki/etcd/peer.key"
 )
 
 type ControlPlaneUpgrader struct {
 	*base
-	oldNodeToEtcdMember    map[string]string
+	oldNodeToEtcdMember map[string]string
 }
 
 func NewControlPlaneUpgrader(config Config) (*ControlPlaneUpgrader, error) {
@@ -44,6 +44,7 @@ func NewControlPlaneUpgrader(config Config) (*ControlPlaneUpgrader, error) {
 	}, nil
 }
 
+// Upgrade does the upgrading of the control plane.
 func (u *ControlPlaneUpgrader) Upgrade() error {
 	machines, err := u.listMachines()
 	if err != nil {
@@ -285,7 +286,7 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 
 	// save all etcd member id corresponding to node before upgrade starts
 	err := u.oldNodeToEtcdMemberId(time.Minute * 1)
-	if err != nil{
+	if err != nil {
 		return err
 	}
 
@@ -344,9 +345,9 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 		}
 
 		// delete old etcd member
-		err = u.deleteEtcdMember(time.Minute * 1, nodeHostname, u.oldNodeToEtcdMember[oldHostName])
+		err = u.deleteEtcdMember(time.Minute*1, nodeHostname, u.oldNodeToEtcdMember[oldHostName])
 		if err != nil {
-			return errors.Wrapf(err,"unable to delete old etcd member %s", u.oldNodeToEtcdMember[oldHostName])
+			return errors.Wrapf(err, "unable to delete old etcd member %s", u.oldNodeToEtcdMember[oldHostName])
 		}
 
 		if err := u.deleteMachine(&machine); err != nil {
@@ -534,16 +535,16 @@ func (u *ControlPlaneUpgrader) oldNodeToEtcdMemberId(timeout time.Duration) erro
 		return errors.New("no etcd member found")
 	}
 
-	lines := strings.Split(stdout,"\n")
+	lines := strings.Split(stdout, "\n")
 	nodeIPtoEtcdMemberMap := make(map[string]string)
 
 	for _, line := range lines {
 		if len(line) > 0 {
 			words := strings.Split(line, " ")
 
-			nodeName := strings.Split(words[1],"=")
+			nodeName := strings.Split(words[1], "=")
 			node := nodeName[1]
-			etcdMemberId := words[0][:len(words[0]) - 1]
+			etcdMemberId := words[0][:len(words[0])-1]
 			nodeIPtoEtcdMemberMap[node] = etcdMemberId
 		}
 	}
