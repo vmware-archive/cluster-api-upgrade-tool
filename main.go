@@ -17,15 +17,16 @@ func main() {
 
 	root := &cobra.Command{
 		Use:   os.Args[0],
-		Short: "upgrades kubernetes clusters",
+		Short: "Upgrades Kubernetes clusters created by Cluster API.",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			err := upgrade.ValidateArgs(upgradeConfig)
 			if err != nil {
-				logrus.Errorf("Falied to validate the arguments")
+				logrus.Errorf("Failed to validate the arguments: %v", err)
 				return err
 			}
 
-			err = Upgrade(upgradeConfig)
+			// TODO: print the stack trace or handle the error.
+			err = upgradeCluster(upgradeConfig)
 			if err != nil {
 				logrus.Errorf("Upgrade failed: %s", err.Error())
 			} else {
@@ -59,7 +60,7 @@ func main() {
 	}
 }
 
-func Upgrade(config upgrade.Config) error {
+func upgradeCluster(config upgrade.Config) error {
 	// @TODO Add Logging here
 	// @TODO add Retry logic here
 	// @TODO add state machine here
