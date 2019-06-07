@@ -23,6 +23,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/cluster-api-provider-aws/pkg/cloud/aws/tags"
 )
 
 // AWSResourceReference is a reference to a specific AWS resource by ID, ARN, or filters.
@@ -237,6 +238,9 @@ var (
 
 	// SecurityGroupControlPlane defines a Kubernetes control plane node role
 	SecurityGroupControlPlane = SecurityGroupRole("controlplane")
+
+	// SecurityGroupLB defines a container for the cloud provider to inject its load balancer ingress rules
+	SecurityGroupLB = SecurityGroupRole("lb")
 )
 
 // SecurityGroup defines an AWS security group.
@@ -251,7 +255,7 @@ type SecurityGroup struct {
 	IngressRules IngressRules `json:"ingressRule"`
 
 	// Tags is a map of tags associated with the security group.
-	Tags map[string]string `json:"tags,omitempty"`
+	Tags tags.Map `json:"tags,omitempty"`
 }
 
 // String returns a string representation of the security group.
@@ -266,6 +270,9 @@ var (
 	// SecurityGroupProtocolAll is a wildcard for all IP protocols
 	SecurityGroupProtocolAll = SecurityGroupProtocol("-1")
 
+	// SecurityGroupProtocolIPinIP represents the IP in IP protocol in ingress rules
+	SecurityGroupProtocolIPinIP = SecurityGroupProtocol("4")
+
 	// SecurityGroupProtocolTCP represents the TCP protocol in ingress rules
 	SecurityGroupProtocolTCP = SecurityGroupProtocol("tcp")
 
@@ -274,6 +281,9 @@ var (
 
 	// SecurityGroupProtocolICMP represents the ICMP protocol in ingress rules
 	SecurityGroupProtocolICMP = SecurityGroupProtocol("icmp")
+
+	// SecurityGroupProtocolICMPv6 represents the ICMPv6 protocol in ingress rules
+	SecurityGroupProtocolICMPv6 = SecurityGroupProtocol("58")
 )
 
 // IngressRule defines an AWS ingress rule for security groups.
@@ -416,6 +426,9 @@ type Instance struct {
 
 	// Indicates whether the instance is optimized for Amazon EBS I/O.
 	EBSOptimized *bool `json:"ebsOptimized,omitempty"`
+
+	// Specifies size (in Gi) of the root storage device
+	RootDeviceSize int64 `json:"rootDeviceSize,omitempty"`
 
 	// The tags associated with the instance.
 	Tags map[string]string `json:"tags,omitempty"`
