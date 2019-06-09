@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/vmware/cluster-api-upgrade-tool/capkactuators"
-
+	"k8s.io/klog"
 	"sigs.k8s.io/cluster-api/pkg/apis"
 	"sigs.k8s.io/cluster-api/pkg/apis/cluster/common"
+	"sigs.k8s.io/cluster-api/pkg/client/clientset_generated/clientset"
 	capicluster "sigs.k8s.io/cluster-api/pkg/controller/cluster"
 	capimachine "sigs.k8s.io/cluster-api/pkg/controller/machine"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -34,8 +35,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	cs, err := clientset.NewForConfig(cfg)
+	if err != nil {
+		klog.Fatalf("Failed to create client from configuration: %v", err)
+	}
+
 	clusterActuator := capkactuators.NewClusterActuator()
-	machineActuator := capkactuators.NewMachineActuator("/kubeconfigs")
+	machineActuator := capkactuators.NewMachineActuator("/kubeconfigs", cs.ClusterV1alpha1())
 
 	// Register our cluster deployer (the interface is in clusterctl and we define the Deployer interface on the actuator)
 	common.RegisterClusterProvisioner("aws", clusterActuator)

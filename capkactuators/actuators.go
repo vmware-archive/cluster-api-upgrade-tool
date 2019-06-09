@@ -1,41 +1,40 @@
+// Copyright 2019 VMware, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package capkactuators
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"time"
 
-	"github.com/vmware/cluster-api-upgrade-tool/pkg/execer"
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/kind/actions"
 	clusterv1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
+	"sigs.k8s.io/cluster-api/pkg/client/clientset_generated/clientset/typed/cluster/v1alpha1"
 	capierror "sigs.k8s.io/cluster-api/pkg/controller/error"
+	"sigs.k8s.io/controller-runtime/pkg/patch"
 	"sigs.k8s.io/kind/pkg/cluster"
 	"sigs.k8s.io/kind/pkg/cluster/constants"
 	"sigs.k8s.io/kind/pkg/cluster/nodes"
 )
 
 type Machine struct {
-	Copy   *execer.Client
-	Docker *execer.Client
-	Stdout io.Writer
-	Stderr io.Writer
-
+	ClusterAPI     v1alpha1.ClusterV1alpha1Interface
 	KubeconfigsDir string
 }
 
-func NewMachineActuator(kubeconfigs string) *Machine {
+func NewMachineActuator(kubeconfigs string, clusterapi v1alpha1.ClusterV1alpha1Interface) *Machine {
 	return &Machine{
-		Copy:           execer.NewClient("cp"),
-		Docker:         execer.NewClient("docker"),
-		Stdout:         os.Stdout,
-		Stderr:         os.Stderr,
+		ClusterAPI:     clusterapi,
 		KubeconfigsDir: kubeconfigs,
 	}
 }
 
 func (m *Machine) Create(ctx context.Context, c *clusterv1.Cluster, machine *clusterv1.Machine) error {
+	old := machine.DeepCopy()
 	fmt.Printf("Creating a machine for cluster %q\n", c.Name)
 	clusterExists, err := cluster.IsKnown(c.Name)
 	if err != nil {
@@ -48,11 +47,21 @@ func (m *Machine) Create(ctx context.Context, c *clusterv1.Cluster, machine *clu
 	if setValue == constants.ControlPlaneNodeRoleValue {
 		if clusterExists {
 			fmt.Println("Adding a control plane")
-			return actions.AddControlPlane(c.Name)
+			controlPlaneNode, err := actions.AddControlPlane(c.Name)
+			if err != nil {
+				return err
+			}
+			setKindName(machine, controlPlaneNode.Name())
+			return m.save(old, machine)
 		}
 
 		fmt.Println("Creating a brand new cluster")
-		return actions.CreateControlPlane(c.Name)
+		controlPlaneNode, err := actions.CreateControlPlane(c.Name)
+		if err != nil {
+			return err
+		}
+		setKindName(machine, controlPlaneNode.Name())
+		return m.save(old, machine)
 	}
 
 	controlPlanes, err := actions.ListControlPlanes(c.Name)
@@ -66,14 +75,19 @@ func (m *Machine) Create(ctx context.Context, c *clusterv1.Cluster, machine *clu
 	}
 
 	fmt.Println("Creating a new worker node")
-	return actions.AddWorker(c.Name)
+	worker, err := actions.AddWorker(c.Name)
+	if err != nil {
+		return err
+	}
+	setKindName(machine, worker.Name())
+	return m.save(old, machine)
 }
 func (m *Machine) Delete(ctx context.Context, cluster *clusterv1.Cluster, machine *clusterv1.Machine) error {
 	return actions.DeleteNode(cluster.Name, getKindName(machine))
 }
 
 func (m *Machine) Update(ctx context.Context, cluster *clusterv1.Cluster, machine *clusterv1.Machine) error {
-	fmt.Println("Not implemented yet.")
+	fmt.Println("Update machine is not implemented yet.")
 	return nil
 }
 
@@ -87,6 +101,33 @@ func (m *Machine) Exists(ctx context.Context, cluster *clusterv1.Cluster, machin
 		return true, err
 	}
 	return len(nodeList) >= 1, nil
+}
+
+func (m *Machine) save(old, new *clusterv1.Machine) error {
+	fmt.Println("updating machine")
+	p, err := patch.NewJSONPatch(old, new)
+	if err != nil {
+		fmt.Printf("%+v\n", err)
+		return err
+	}
+	fmt.Println("Patches", p)
+	if len(p) != 0 {
+		pb, err := json.MarshalIndent(p, "", "  ")
+		if err != nil {
+			fmt.Printf("%+v\n", err)
+			return err
+		}
+		if _, err := m.ClusterAPI.Machines(old.Namespace).Patch(new.Name, types.JSONPatchType, pb); err != nil {
+			fmt.Printf("%+v\n", err)
+			return err
+		}
+		fmt.Println("updated")
+	}
+	return nil
+}
+
+func setKindName(machine *clusterv1.Machine, name string) {
+	machine.SetAnnotations(map[string]string{"name": name})
 }
 
 func getKindName(machine *clusterv1.Machine) string {
@@ -111,11 +152,25 @@ func NewClusterActuator() *Cluster {
 }
 
 func (c *Cluster) Reconcile(cluster *clusterv1.Cluster) error {
+	elb, err := nodes.List(
+		fmt.Sprintf("label=%s=%s", constants.NodeRoleKey, constants.ExternalLoadBalancerNodeRoleValue),
+		fmt.Sprintf("label=%s=%s", constants.ClusterLabelKey, cluster.Name),
+	)
+	if err != nil {
+		fmt.Printf("%+v\n", err)
+		return err
+	}
+	fmt.Println("found external load balancers:", elb)
+	// Abandon if we already have a load balancer.
+	if len(elb) > 0 {
+		fmt.Println("Nothing to do for this cluster.")
+		return nil
+	}
 	fmt.Printf("The cluster named %q has been created! Setting up some infrastructure.\n", cluster.Name)
 	return actions.SetUpLoadBalancer(cluster.Name)
 }
 
 func (c *Cluster) Delete(cluster *clusterv1.Cluster) error {
-	fmt.Println("Not implemented.")
+	fmt.Println("Cluster delete is not implemented.")
 	return nil
 }

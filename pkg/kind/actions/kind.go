@@ -1,3 +1,6 @@
+// Copyright 2019 VMware, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package actions
 
 import (
@@ -34,7 +37,7 @@ func KubeConfigPath(clusterName string) string {
 }
 
 // AddControlPlane adds a control plane to a given cluster
-func AddControlPlane(clusterName string) error {
+func AddControlPlane(clusterName string) (*nodes.Node, error) {
 	clusterLabel := fmt.Sprintf("%s=%s", constants.ClusterLabelKey, clusterName)
 	fmt.Println("Adding a new control plane")
 	controlPlane, err := nodes.CreateControlPlaneNode(
@@ -46,17 +49,17 @@ func AddControlPlane(clusterName string) error {
 		nil,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Println("Joining new control plane")
 	if err := KubeadmJoinControlPlane(clusterName, controlPlane); err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Println("Configuring load balancer")
 	if err := ConfigureLoadBalancer(clusterName); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return controlPlane, nil
 }
 
 // SetUpLoadBalancer creates a load balancer but does not configure it.
@@ -76,41 +79,42 @@ func SetUpLoadBalancer(clusterName string) error {
 }
 
 // CreateControlPlane is creating the first control plane and configuring the load balancer.
-func CreateControlPlane(clusterName string) error {
+func CreateControlPlane(clusterName string) (*nodes.Node, error) {
 	fmt.Println("Creating control plane node")
 	clusterLabel := fmt.Sprintf("%s=%s", constants.ClusterLabelKey, clusterName)
-	if _, err := nodes.CreateControlPlaneNode(
+	controlPlaneNode, err := nodes.CreateControlPlaneNode(
 		getName(clusterName, constants.ControlPlaneNodeRoleValue),
 		defaults.Image,
 		clusterLabel,
 		"127.0.0.1",
 		0,
 		nil,
-	); err != nil {
-		return err
+	)
+	if err != nil {
+		return nil, err
 	}
 	fmt.Println("Configuring load balancer")
 	if err := ConfigureLoadBalancer(clusterName); err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Println("Configuring kubeadm")
 	if err := KubeadmConfig(clusterName); err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Println("Initializing cluster")
 	if err := KubeadmInit(clusterName); err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Println("Setting up CNI")
 	if err := InstallCNI(clusterName); err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Println("Created a cluster!")
-	return nil
+	return controlPlaneNode, nil
 }
 
 // AddWorker adds a worker to a given cluster.
-func AddWorker(clusterName string) error {
+func AddWorker(clusterName string) (*nodes.Node, error) {
 	clusterLabel := fmt.Sprintf("%s=%s", constants.ClusterLabelKey, clusterName)
 	fmt.Println("Adding a new worker")
 	worker, err := nodes.CreateWorkerNode(
@@ -120,12 +124,12 @@ func AddWorker(clusterName string) error {
 		nil,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := KubeadmJoin(clusterName, worker); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return worker, nil
 }
 
 // DeleteNode removes a node from a cluster and cleans up docker.

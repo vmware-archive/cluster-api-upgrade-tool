@@ -1,3 +1,6 @@
+// Copyright 2019 VMware, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (
@@ -106,7 +109,7 @@ spec:
           name: dockersock
         - mountPath: /var/lib/docker
           name: dockerlib
-        - mountPath: /kubeconfigs
+        - mountPath: /root/.kube
           name: kubeconfigs
         securityContext:
           privileged: true

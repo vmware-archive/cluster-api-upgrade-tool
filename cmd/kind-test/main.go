@@ -1,3 +1,6 @@
+// Copyright 2019 VMware, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (
@@ -24,11 +27,11 @@ func main() {
 			if err := actions.SetUpLoadBalancer(clusterName); err != nil {
 				panic(err)
 			}
-			if err := actions.CreateControlPlane(clusterName); err != nil {
+			if _, err := actions.CreateControlPlane(clusterName); err != nil {
 				panic(err)
 			}
 		case "add-worker":
-			if err := actions.AddWorker(clusterName); err != nil {
+			if _, err := actions.AddWorker(clusterName); err != nil {
 				panic(err)
 			}
 		case "delete-node":
@@ -40,7 +43,7 @@ func main() {
 				panic(err)
 			}
 		case "add-control-plane":
-			if err := actions.AddControlPlane(clusterName); err != nil {
+			if _, err := actions.AddControlPlane(clusterName); err != nil {
 				panic(err)
 			}
 		case "set-cluster-name":

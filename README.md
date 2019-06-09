@@ -43,6 +43,10 @@ Example:
 
 go build
 
+## Testing
+
+There is a cluster-api-kind-provider in this repo. We use this for testing.
+
 ## Documentation
 
 TODO
