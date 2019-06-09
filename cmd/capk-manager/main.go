@@ -34,13 +34,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("dklfsdfj")
 	clusterActuator := capkactuators.NewClusterActuator()
 	machineActuator := capkactuators.NewMachineActuator("/kubeconfigs")
 
 	// Register our cluster deployer (the interface is in clusterctl and we define the Deployer interface on the actuator)
 	common.RegisterClusterProvisioner("aws", clusterActuator)
-	fmt.Println("hi again?")
 	if err := apis.AddToScheme(mgr.GetScheme()); err != nil {
 		panic(err)
 	}
