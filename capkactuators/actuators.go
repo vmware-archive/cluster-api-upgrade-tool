@@ -33,6 +33,7 @@ func NewMachineActuator(kubeconfigs string, clusterapi v1alpha1.ClusterV1alpha1I
 	}
 }
 
+// Have to print all the errors because cluster-api swallows them
 func (m *Machine) Create(ctx context.Context, c *clusterv1.Cluster, machine *clusterv1.Machine) error {
 	old := machine.DeepCopy()
 	fmt.Printf("Creating a machine for cluster %q\n", c.Name)
@@ -41,14 +42,26 @@ func (m *Machine) Create(ctx context.Context, c *clusterv1.Cluster, machine *clu
 		fmt.Printf("%+v", err)
 		return err
 	}
+	// If there's no cluster, requeue the request until there is one
+	if !clusterExists {
+		fmt.Println("There is no cluster yet, waiting for a cluster before creating machines")
+		return &capierror.RequeueAfterError{RequeueAfter: 30 * time.Second}
+	}
+
+	controlPlanes, err := actions.ListControlPlanes(c.Name)
+	if err != nil {
+		fmt.Printf("%+v\n", err)
+		return err
+	}
 	fmt.Printf("Is there a cluster? %v\n", clusterExists)
 	setValue := getRole(machine)
 	fmt.Printf("This node has a role of %q\n", setValue)
 	if setValue == constants.ControlPlaneNodeRoleValue {
-		if clusterExists {
+		if len(controlPlanes) > 0 {
 			fmt.Println("Adding a control plane")
 			controlPlaneNode, err := actions.AddControlPlane(c.Name)
 			if err != nil {
+				fmt.Printf("%+v", err)
 				return err
 			}
 			setKindName(machine, controlPlaneNode.Name())
@@ -58,16 +71,13 @@ func (m *Machine) Create(ctx context.Context, c *clusterv1.Cluster, machine *clu
 		fmt.Println("Creating a brand new cluster")
 		controlPlaneNode, err := actions.CreateControlPlane(c.Name)
 		if err != nil {
+			fmt.Printf("%+v", err)
 			return err
 		}
 		setKindName(machine, controlPlaneNode.Name())
 		return m.save(old, machine)
 	}
 
-	controlPlanes, err := actions.ListControlPlanes(c.Name)
-	if err != nil {
-		fmt.Printf("%+v\n", err)
-	}
 	// If there are no control plane then we should hold off on joining workers
 	if len(controlPlanes) == 0 {
 		fmt.Printf("Sending machine %q back since there is no cluster to join\n", machine.Name)
@@ -77,6 +87,7 @@ func (m *Machine) Create(ctx context.Context, c *clusterv1.Cluster, machine *clu
 	fmt.Println("Creating a new worker node")
 	worker, err := actions.AddWorker(c.Name)
 	if err != nil {
+		fmt.Printf("%+v", err)
 		return err
 	}
 	setKindName(machine, worker.Name())

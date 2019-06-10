@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 
+	"sigs.k8s.io/kind/pkg/container/cri"
+
 	"github.com/pkg/errors"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/kind/kubeadm"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/kind/loadbalancer"
@@ -88,7 +90,12 @@ func CreateControlPlane(clusterName string) (*nodes.Node, error) {
 		clusterLabel,
 		"127.0.0.1",
 		0,
-		nil,
+		[]cri.Mount{
+			{
+				ContainerPath: "/root/.kube",
+				HostPath:      "/kubeconfigs",
+			},
+		},
 	)
 	if err != nil {
 		return nil, err

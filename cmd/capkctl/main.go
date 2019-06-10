@@ -109,7 +109,7 @@ spec:
           name: dockersock
         - mountPath: /var/lib/docker
           name: dockerlib
-        - mountPath: /root/.kube
+        - mountPath: /kubeconfigs
           name: kubeconfigs
         securityContext:
           privileged: true
