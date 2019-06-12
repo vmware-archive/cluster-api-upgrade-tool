@@ -4,6 +4,7 @@
 package upgrade
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -238,42 +239,10 @@ func (u *ControlPlaneUpgrader) addMachine(source *clusterapiv1alpha1.Machine) (*
 }
 
 func (u *ControlPlaneUpgrader) etcdClusterHealthCheck(timeout time.Duration) error {
-	u.log.Info("etcdClusterHealthCheck")
-	// get pods in kube-system with label component=etcd
-	pods, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").List(metav1.ListOptions{LabelSelector: "component=etcd"})
-	if err != nil {
-		return errors.Wrap(err, "error listing etcd pods")
-	}
-	if len(pods.Items) < 1 {
-		return errors.New("found 0 etcd pods")
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-	firstEtcdPodName := pods.Items[0].Name
-	endpoint := fmt.Sprintf("https://%s:2379", pods.Items[0].Status.PodIP)
-
-	// get the first one
-	opts := kubernetes.PodExecInput{
-		RestConfig:       u.targetRestConfig,
-		KubernetesClient: u.targetKubernetesClient,
-		Namespace:        "kube-system",
-		Name:             firstEtcdPodName,
-		Command: []string{
-			"etcdctl",
-			"--ca-file", etcdCACertFile,
-			"--cert-file", etcdCertFile,
-			"--key-file", etcdKeyFile,
-			"--endpoints", endpoint,
-			"cluster-health",
-		},
-		Timeout: timeout,
-	}
-
-	stdout, stderr, err := kubernetes.PodExec(opts)
-
-	// @TODO figure out how we want logs to show up in this library
-	u.log.Info(fmt.Sprintf("etcdClusterHealthCheck stdout: %s", stdout))
-	u.log.Info(fmt.Sprintf("etcdClusterHealthCheck stderr: %s", stderr))
-
+	_, _, err := u.etcdctl(ctx, "cluster-health")
 	return err
 }
 
@@ -494,43 +463,12 @@ func (u *ControlPlaneUpgrader) listMachines() (*clusterapiv1alpha1.MachineList, 
 }
 
 func (u *ControlPlaneUpgrader) oldNodeToEtcdMemberId(timeout time.Duration) error {
-	u.log.Info("oldNodeToEtcdMemberId")
-	pods, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").List(metav1.ListOptions{LabelSelector: "component=etcd"})
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	stdout, _, err := u.etcdctl(ctx, "member", "list")
 	if err != nil {
-		return errors.Wrap(err, "error listing etcd pods")
-	}
-	if len(pods.Items) < 1 {
-		return errors.New("found 0 etcd pods")
-	}
-
-	firstEtcdPodName := pods.Items[0].Name
-	endpoint := fmt.Sprintf("https://%s:2379", pods.Items[0].Status.PodIP)
-
-	opts := kubernetes.PodExecInput{
-		RestConfig:       u.targetRestConfig,
-		KubernetesClient: u.targetKubernetesClient,
-		Namespace:        "kube-system",
-		Name:             firstEtcdPodName,
-		Command: []string{
-			"etcdctl",
-			"--ca-file", etcdCACertFile,
-			"--cert-file", etcdCertFile,
-			"--key-file", etcdKeyFile,
-			"--endpoints", endpoint,
-			"member",
-			"list",
-		},
-		Timeout: timeout,
-	}
-
-	stdout, stderr, err := kubernetes.PodExec(opts)
-
-	// @TODO figure out how we want logs to show up in this library
-	u.log.Info(fmt.Sprintf("oldNodeToEtcdMemberId stdout: %s", stdout))
-	u.log.Info(fmt.Sprintf("oldNodeToEtcdMemberId stderr: %s", stderr))
-
-	if err != nil {
-		return errors.Wrap(err, "no etcd member found")
+		return err
 	}
 
 	lines := strings.Split(stdout, "\n")
@@ -555,58 +493,82 @@ func (u *ControlPlaneUpgrader) oldNodeToEtcdMemberId(timeout time.Duration) erro
 // deleteEtcdMember deletes the old etcd member
 func (u *ControlPlaneUpgrader) deleteEtcdMember(timeout time.Duration, newNode string, etcdMemberId string) error {
 	u.log.Info("deleteEtcdMember")
-	pods, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").List(metav1.ListOptions{LabelSelector: "component=etcd"})
+	pods, err := u.listEtcdPods()
 	if err != nil {
-		return errors.Wrap(err, "error listing etcd pods")
+		return err
 	}
-	if len(pods.Items) < 1 {
+	if len(pods) == 0 {
 		return errors.New("found 0 etcd pods")
 	}
 
-	var endpointIP string
-	var etcdPodName string
-	found := false
-	for _, pod := range pods.Items {
-		if pod.Spec.NodeName == newNode {
-			endpointIP = pod.Status.PodIP
-			etcdPodName = pod.Name
-			found = true
+	var pod *v1.Pod
+	for i := range pods {
+		p := &pods[i]
+		if p.Spec.NodeName == newNode {
+			pod = p
 			break
 		}
 	}
 
-	if !found {
+	if pod == nil {
 		return errors.New("no new etcd pod found running on node" + newNode)
 	}
-	endpoint := fmt.Sprintf("https://%s:2379", endpointIP)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	_, _, err = u.etcdctlForPod(ctx, pod, "member", "remove", etcdMemberId)
+	return err
+}
+
+func (u *ControlPlaneUpgrader) listEtcdPods() ([]v1.Pod, error) {
+	// get pods in kube-system with label component=etcd
+	list, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").List(metav1.ListOptions{LabelSelector: "component=etcd"})
+	if err != nil {
+		return []v1.Pod{}, errors.Wrap(err, "error listing pods")
+	}
+	return list.Items, nil
+}
+
+func (u *ControlPlaneUpgrader) etcdctl(ctx context.Context, args ...string) (string, string, error) {
+	pods, err := u.listEtcdPods()
+	if err != nil {
+		return "", "", err
+	}
+	if len(pods) == 0 {
+		return "", "", errors.New("found 0 etcd pods")
+	}
+
+	// get the first one
+	firstPod := pods[0]
+
+	return u.etcdctlForPod(ctx, &firstPod, args...)
+}
+
+func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, args ...string) (string, string, error) {
+	endpoint := fmt.Sprintf("https://%s:2379", pod.Status.PodIP)
 
 	opts := kubernetes.PodExecInput{
 		RestConfig:       u.targetRestConfig,
 		KubernetesClient: u.targetKubernetesClient,
-		Namespace:        "kube-system",
-		Name:             etcdPodName,
+		Namespace:        pod.Namespace,
+		Name:             pod.Name,
 		Command: []string{
 			"etcdctl",
 			"--ca-file", etcdCACertFile,
 			"--cert-file", etcdCertFile,
 			"--key-file", etcdKeyFile,
 			"--endpoints", endpoint,
-			"member",
-			"remove",
-			etcdMemberId,
 		},
-		Timeout: timeout,
 	}
 
-	stdout, stderr, err := kubernetes.PodExec(opts)
+	opts.Command = append(opts.Command, args...)
 
-	// @TODO figure out how we want logs to show up in this library
-	u.log.Info(fmt.Sprintf("deleteEtcdMember stdout: %s", stdout))
-	u.log.Info(fmt.Sprintf("deleteEtcdMember stderr: %s", stderr))
+	stdout, stderr, err := kubernetes.PodExec(ctx, opts)
 
-	if err != nil {
-		return errors.Wrap(err, "no etcd member found")
-	}
+	// TODO figure out how we want logs to show up in this library
+	u.log.Info(fmt.Sprintf("etcdctl stdout: %s", stdout))
+	u.log.Info(fmt.Sprintf("etcdctl stderr: %s", stderr))
 
-	return nil
+	return stdout, stderr, err
 }
