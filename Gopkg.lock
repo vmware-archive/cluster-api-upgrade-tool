@@ -2,6 +2,30 @@
 
 
 [[projects]]
+  digest = "1:aa65b4877ac225076b4362885e9122fdf6a8728f735749c24f1aeabcad9bdaba"
+  name = "cloud.google.com/go"
+  packages = [
+    "compute/metadata",
+    "internal",
+  ]
+  pruneopts = "UT"
+  revision = "3b1ae45394a234c385be014e9a488f2bb6eef821"
+
+[[projects]]
+  digest = "1:c82167b21f761be22f6d8b0852efb9f150100f23d41b067130855b1fcb44b398"
+  name = "github.com/Azure/go-autorest"
+  packages = [
+    "autorest",
+    "autorest/adal",
+    "autorest/azure",
+    "autorest/date",
+    "logger",
+    "version",
+  ]
+  pruneopts = "UT"
+  revision = "ea233b6412b0421a65dc6160e16c893364664a95"
+
+[[projects]]
   digest = "1:8d8b6f6f1f7f93330aad56a76d32b279528ddb4af8d3c0f32989e3b7a9c339e2"
   name = "github.com/aws/aws-sdk-go"
   packages = [
@@ -51,6 +75,13 @@
   pruneopts = "UT"
   revision = "ba2c2ddd89069b46a7011d4106f6868f17ee1705"
   version = "v3.6.1"
+
+[[projects]]
+  digest = "1:dd39e40faa3d7a12ce2b930efbe954a45e8f91a87e2adf5d8654ccb6137c4ab2"
+  name = "github.com/dgrijalva/jwt-go"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "01aeca54ebda6e0fbfafd0a524d234159c05ec20"
 
 [[projects]]
   branch = "master"
@@ -131,6 +162,21 @@
   pruneopts = "UT"
   revision = "7c663266750e7d82587642f65e60bc4083f1f84e"
   version = "v0.2.0"
+
+[[projects]]
+  digest = "1:32c2c0ff3114a2629e4f1884ad1cbe8a4a76ae789f746c3f3898ac5138ef9f05"
+  name = "github.com/gophercloud/gophercloud"
+  packages = [
+    ".",
+    "openstack",
+    "openstack/identity/v2/tenants",
+    "openstack/identity/v2/tokens",
+    "openstack/identity/v3/tokens",
+    "openstack/utils",
+    "pagination",
+  ]
+  pruneopts = "UT"
+  revision = "781450b3c4fcb4f5182bcc5133adb4b2e4a09d1d"
 
 [[projects]]
   branch = "master"
@@ -270,15 +316,17 @@
   revision = "4829fb13d2c62012c17688fa7f629f371014946d"
 
 [[projects]]
-  branch = "master"
-  digest = "1:9927d6aceb89d188e21485f42a7a254e67e6fdcf4260aba375fe18e3c300dfb4"
+  digest = "1:ad764db92ed977f803ff0f59a7a957bf65cc4e8ae9dfd08228e1f54ea40392e0"
   name = "golang.org/x/oauth2"
   packages = [
     ".",
+    "google",
     "internal",
+    "jws",
+    "jwt",
   ]
   pruneopts = "UT"
-  revision = "9f3314589c9a9136388751d9adae6b0ed400978a"
+  revision = "a6bd8cefa1811bd24b86f8902872e4e8225f74c4"
 
 [[projects]]
   branch = "master"
@@ -325,13 +373,16 @@
   revision = "9d24e82272b4f38b78bc8cff74fa936d31ccd8ef"
 
 [[projects]]
-  digest = "1:6eb6e3b6d9fffb62958cf7f7d88dbbe1dd6839436b0802e194c590667a40412a"
+  digest = "1:04f2ff15fc59e1ddaf9900ad0e19e5b19586b31f9dafd4d592b617642b239d8f"
   name = "google.golang.org/appengine"
   packages = [
+    ".",
     "internal",
+    "internal/app_identity",
     "internal/base",
     "internal/datastore",
     "internal/log",
+    "internal/modules",
     "internal/remote_api",
     "internal/urlfetch",
     "urlfetch",
@@ -450,7 +501,7 @@
   version = "kubernetes-1.13.1"
 
 [[projects]]
-  digest = "1:08f02e6aeafe6a98cd140bc8ddbcec52c2da48d11f2c24f57085314783fc09a6"
+  digest = "1:f40acd1b76422bec9f150f58cf8c32f602c964e08f917cc907fcb4364ae0e8f3"
   name = "k8s.io/client-go"
   packages = [
     "discovery",
@@ -492,9 +543,15 @@
     "pkg/apis/clientauthentication/v1alpha1",
     "pkg/apis/clientauthentication/v1beta1",
     "pkg/version",
+    "plugin/pkg/client/auth",
+    "plugin/pkg/client/auth/azure",
     "plugin/pkg/client/auth/exec",
+    "plugin/pkg/client/auth/gcp",
+    "plugin/pkg/client/auth/oidc",
+    "plugin/pkg/client/auth/openstack",
     "rest",
     "rest/watch",
+    "third_party/forked/golang/template",
     "tools/auth",
     "tools/clientcmd",
     "tools/clientcmd/api",
@@ -511,6 +568,7 @@
     "util/flowcontrol",
     "util/homedir",
     "util/integer",
+    "util/jsonpath",
   ]
   pruneopts = "UT"
   revision = "8d9ed539ba3134352c586810e749e58df4e94e4f"
@@ -624,6 +682,7 @@
     "k8s.io/client-go/kubernetes",
     "k8s.io/client-go/kubernetes/scheme",
     "k8s.io/client-go/kubernetes/typed/core/v1",
+    "k8s.io/client-go/plugin/pkg/client/auth",
     "k8s.io/client-go/rest",
     "k8s.io/client-go/tools/clientcmd",
     "k8s.io/client-go/tools/remotecommand",

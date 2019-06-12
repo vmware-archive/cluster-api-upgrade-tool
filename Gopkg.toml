@@ -21,6 +21,24 @@
 [[constraint]]
   name = "k8s.io/client-go"
   version = "kubernetes-1.13.1"
+
 [[constraint]]
   name = "github.com/go-logr/logr"
   version = "0.1.0"
+
+# For matching client-go@kubernetes-1.13.1
+[[override]]
+  name = "cloud.google.com/go"
+  revision = "3b1ae45394a234c385be014e9a488f2bb6eef821"
+[[override]]
+  name = "github.com/Azure/go-autorest"
+  revision = "ea233b6412b0421a65dc6160e16c893364664a95"
+[[override]]
+  name = "github.com/dgrijalva/jwt-go"
+  revision = "01aeca54ebda6e0fbfafd0a524d234159c05ec20"
+[[override]]
+  name = "github.com/gophercloud/gophercloud"
+  revision = "781450b3c4fcb4f5182bcc5133adb4b2e4a09d1d"
+[[override]]
+  name = "golang.org/x/oauth2"
+  revision = "a6bd8cefa1811bd24b86f8902872e4e8225f74c4"
