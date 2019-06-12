@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	"github.com/blang/semver"
+	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	kubernetes2 "github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,6 +18,7 @@ import (
 )
 
 type base struct {
+	log                        logr.Logger
 	userVersion                semver.Version
 	desiredVersion             semver.Version
 	clusterNamespace           string
@@ -28,7 +29,7 @@ type base struct {
 	providerIDsToNodes         map[string]*v1.Node
 }
 
-func newBase(config Config) (*base, error) {
+func newBase(log logr.Logger, config Config) (*base, error) {
 	var userVersion, desiredVersion semver.Version
 
 	if config.KubernetesVersion != "" {
@@ -40,19 +41,19 @@ func newBase(config Config) (*base, error) {
 		desiredVersion = v
 	}
 
-	logrus.Info("Creating management rest config")
+	log.Info("Creating management rest config")
 	managementRestConfig, err := kubernetes2.NewRestConfig(config.ManagementCluster.Kubeconfig, config.ManagementCluster.Context)
 	if err != nil {
 		return nil, err
 	}
 
-	logrus.Info("Creating management cluster api client")
+	log.Info("Creating management cluster api client")
 	managementClusterAPIClient, err := clusterapiv1alpha1client.NewForConfig(managementRestConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating management cluster api client")
 	}
 
-	logrus.Infof("Retrieving cluster %s/%s from management cluster", config.TargetCluster.Namespace, config.TargetCluster.Name)
+	log.Info("Retrieving cluster from management cluster", "cluster-namespace", config.TargetCluster.Namespace, "cluster-name", config.TargetCluster.Name)
 	cluster, err := managementClusterAPIClient.Clusters(config.TargetCluster.Namespace).Get(config.TargetCluster.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -68,33 +69,34 @@ func newBase(config Config) (*base, error) {
 
 	// TODO .Port is 443, but for CAPA, the ELB is on 6443
 	targetClusterURL := fmt.Sprintf("https://%s:%d", clusterEndPoint, 6443)
-	logrus.Infof("Target cluster URL: %s", targetClusterURL)
+	log.Info("Determined target cluster apiserver endpoint", "url", targetClusterURL)
 
-	logrus.Infof("Creating management kubernetes client")
+	log.Info("Creating management kubernetes client")
 	managementKubernetesClient, err := kubernetes.NewForConfig(managementRestConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating management kubernetes client")
 	}
 
-	logrus.Info("Getting key pair")
+	log.Info("Getting key pair")
 	keyPair, err := newKeyPairGetter(managementKubernetesClient.CoreV1()).getKeyPair(cluster, config.TargetCluster.CAKeyPair)
 	if err != nil {
 		return nil, err
 	}
 
-	logrus.Info("Generating target rest config from key pair")
+	log.Info("Generating target rest config from key pair")
 	targetRestConfig, err := restConfigFromKeyPair(cluster.GetName(), targetClusterURL, keyPair)
 	if err != nil {
 		return nil, err
 	}
 
-	logrus.Info("Creating target kubernetes client")
+	log.Info("Creating target kubernetes client")
 	targetKubernetesClient, err := kubernetes.NewForConfig(targetRestConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating target cluster client")
 	}
 
 	return &base{
+		log:                        log,
 		userVersion:                userVersion,
 		desiredVersion:             desiredVersion,
 		clusterNamespace:           config.TargetCluster.Namespace,
@@ -116,7 +118,7 @@ func (u *base) GetNodeFromProviderID(providerID string) *v1.Node {
 // UpdateProviderIDsToNodes retrieves a map that pairs a providerID to the node by listing all Nodes
 // providerID : Node
 func (u *base) UpdateProviderIDsToNodes() error {
-	logrus.Info("Updating provider IDs to nodes")
+	u.log.Info("Updating provider IDs to nodes")
 	nodes, err := u.targetKubernetesClient.CoreV1().Nodes().List(metav1.ListOptions{})
 	if err != nil {
 		return errors.Wrap(err, "error listing nodes")

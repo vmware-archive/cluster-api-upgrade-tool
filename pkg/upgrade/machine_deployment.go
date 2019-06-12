@@ -8,8 +8,8 @@ import (
 	"fmt"
 
 	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
@@ -19,10 +19,9 @@ type MachineDeploymentUpgrader struct {
 	*base
 }
 
-func NewMachineDeploymentUpgrader(config Config) (*MachineDeploymentUpgrader, error) {
-	b, err := newBase(config)
+func NewMachineDeploymentUpgrader(log logr.Logger, config Config) (*MachineDeploymentUpgrader, error) {
+	b, err := newBase(log, config)
 	if err != nil {
-		logrus.WithError(err).Error("Error initializing upgrader")
 		return nil, errors.Wrap(err, "error initializing upgrader")
 	}
 
@@ -45,7 +44,7 @@ func (u *MachineDeploymentUpgrader) Upgrade() error {
 }
 
 func (u *MachineDeploymentUpgrader) listMachineDeployments() (*clusterapiv1alpha1.MachineDeploymentList, error) {
-	logrus.Info("Listing machine deployments")
+	u.log.Info("Listing machine deployments")
 
 	listOptions := metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("cluster.k8s.io/cluster-name=%s,set=node", u.clusterName),
@@ -62,7 +61,7 @@ func (u *MachineDeploymentUpgrader) listMachineDeployments() (*clusterapiv1alpha
 func (u *MachineDeploymentUpgrader) upgradeMachineDeployments(list *clusterapiv1alpha1.MachineDeploymentList) error {
 	for _, machineDeployment := range list.Items {
 		if err := u.updateMachineDeployment(&machineDeployment); err != nil {
-			logrus.Errorf("Failed to create new machineDeployment(Name:%s),Error: %s", machineDeployment.Name, err.Error())
+			u.log.Error(err, "Failed to create new MachineDeployment", "namespace", machineDeployment.Namespace, "name", machineDeployment.Name)
 			return err
 		}
 	}
@@ -70,7 +69,7 @@ func (u *MachineDeploymentUpgrader) upgradeMachineDeployments(list *clusterapiv1
 }
 
 func (u *MachineDeploymentUpgrader) updateMachineDeployment(machineDeployment *clusterapiv1alpha1.MachineDeployment) error {
-	logrus.Infof("Updating machine deployment : %#v", machineDeployment)
+	u.log.Info("Updating MachineDeployment", "namespace", machineDeployment.Namespace, "name", machineDeployment.Name)
 
 	// Get the original, pre-modified version in json
 	original, err := json.Marshal(machineDeployment)

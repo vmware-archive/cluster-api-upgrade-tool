@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/blang/semver"
+	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -32,10 +32,9 @@ type ControlPlaneUpgrader struct {
 	oldNodeToEtcdMember map[string]string
 }
 
-func NewControlPlaneUpgrader(config Config) (*ControlPlaneUpgrader, error) {
-	b, err := newBase(config)
+func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgrader, error) {
+	b, err := newBase(log, config)
 	if err != nil {
-		logrus.WithError(err).Error("Error initializing upgrader")
 		return nil, errors.Wrap(err, "error initializing upgrader")
 	}
 
@@ -118,7 +117,7 @@ func (u *ControlPlaneUpgrader) updateKubeletConfigMapIfNeeded(version semver.Ver
 	desiredKubeletConfigMapName := fmt.Sprintf("kubelet-config-%d-%d", version.Major, version.Minor)
 	_, err := u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Get(desiredKubeletConfigMapName, metav1.GetOptions{})
 	if err == nil {
-		logrus.WithField("configMapName", desiredKubeletConfigMapName).Info("kubelet configmap already exists")
+		u.log.Info("kubelet configmap already exists", "configMapName", desiredKubeletConfigMapName)
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -228,7 +227,7 @@ func (u *ControlPlaneUpgrader) addMachine(source *clusterapiv1alpha1.Machine) (*
 	newMachine.Spec.Versions.ControlPlane = u.desiredVersion.String()
 	newMachine.Spec.Versions.Kubelet = u.desiredVersion.String()
 
-	logrus.Infof("Creating new machine: %#v", newMachine)
+	u.log.Info("Creating new machine", "name", newMachine)
 
 	createdMachine, err := u.managementClusterAPIClient.Machines(u.clusterNamespace).Create(newMachine)
 	if err != nil {
@@ -239,7 +238,7 @@ func (u *ControlPlaneUpgrader) addMachine(source *clusterapiv1alpha1.Machine) (*
 }
 
 func (u *ControlPlaneUpgrader) etcdClusterHealthCheck(timeout time.Duration) error {
-	logrus.Infof("etcdClusterHealthCheck")
+	u.log.Info("etcdClusterHealthCheck")
 	// get pods in kube-system with label component=etcd
 	pods, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").List(metav1.ListOptions{LabelSelector: "component=etcd"})
 	if err != nil {
@@ -271,19 +270,14 @@ func (u *ControlPlaneUpgrader) etcdClusterHealthCheck(timeout time.Duration) err
 
 	stdout, stderr, err := kubernetes.PodExec(opts)
 
-	if err != nil {
-		logrus.Errorf("etcdClusterHealthCheck stderr: %s", stderr)
-		return err
-	}
-
 	// @TODO figure out how we want logs to show up in this library
-	logrus.Infof("etcdClusterHealthCheck stdout: %s", stdout)
+	u.log.Info(fmt.Sprintf("etcdClusterHealthCheck stdout: %s", stdout))
+	u.log.Info(fmt.Sprintf("etcdClusterHealthCheck stderr: %s", stderr))
 
-	return nil
+	return err
 }
 
 func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.MachineList) error {
-
 	// save all etcd member id corresponding to node before upgrade starts
 	err := u.oldNodeToEtcdMemberId(time.Minute * 1)
 	if err != nil {
@@ -293,7 +287,7 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 	// TODO add more error logs on failure conditions
 	for _, machine := range machines.Items {
 		if machine.Spec.ProviderID == nil {
-			logrus.Errorf("unable to upgrade machine %q as it has no spec.providerID", machine.Name)
+			u.log.Info("unable to upgrade machine as it has no spec.providerID", "name", machine.Name)
 			continue
 		}
 
@@ -318,7 +312,7 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 		}
 		p, err := kubernetes.ParseProviderID(newProviderID)
 		if err != nil {
-			logrus.WithError(err).Errorf("error parsing new provider id %s", newProviderID)
+			u.log.Error(err, "error parsing new provider id", "provider-id", newProviderID)
 		} else {
 			newProviderID = p
 		}
@@ -326,14 +320,14 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 		// 3. wait for the new node to show up with the matching provider id
 		newNode, err := u.waitForNodeWithProviderID(newProviderID, 5*time.Minute)
 		if err != nil {
-			logrus.WithError(err).Errorf("Failed to find a new node with provider id:%s", newProviderID)
+			u.log.Error(err, "Failed to find a new node with provider id", "provider-id", newProviderID)
 			return err
 		}
 
 		// 4. Wait for node to be ready
 		nodeHostname := hostnameForNode(newNode)
 		if nodeHostname == "" {
-			logrus.WithField("node", newNode.Name).Error("unable to find hostname for node")
+			u.log.Info("unable to find hostname for node", "node", newNode.Name)
 			return errors.Errorf("unable to find hostname for node %s", newNode.Name)
 		}
 		err = wait.PollImmediate(15*time.Second, 15*time.Minute, func() (bool, error) {
@@ -372,7 +366,7 @@ func (u *ControlPlaneUpgrader) retry(node *v1.Node, count int, interval time.Dur
 }
 
 func (u *ControlPlaneUpgrader) waitForNodeWithProviderID(providerID string, timeout time.Duration) (*v1.Node, error) {
-	logrus.Infof("Waiting for node with providerID %s", providerID)
+	u.log.Info("Waiting for node", "provider-id", providerID)
 	var node *v1.Node
 
 	err := wait.PollImmediate(5*time.Second, timeout, func() (bool, error) {
@@ -393,12 +387,12 @@ func (u *ControlPlaneUpgrader) waitForNodeWithProviderID(providerID string, time
 		return nil, errors.Wrap(err, "timed out waiting for node provider id")
 	}
 
-	logrus.Infof("Found node %s", node.Name)
+	u.log.Info("Found node", "name", node.Name)
 	return node, nil
 }
 
 func (u *ControlPlaneUpgrader) waitForMachineProviderID(machineNamespace, machineName string, timeout time.Duration) (string, error) {
-	logrus.Infof("waitForMachineProviderID for %s/%s", machineNamespace, machineName)
+	u.log.Info("waitForMachineProviderID start", "namespace", machineNamespace, "name", machineName)
 	var providerID string
 
 	err := wait.PollImmediate(5*time.Second, timeout, func() (bool, error) {
@@ -419,12 +413,12 @@ func (u *ControlPlaneUpgrader) waitForMachineProviderID(machineNamespace, machin
 		return "", errors.Wrap(err, "timed out waiting for machine provider id")
 	}
 
-	logrus.Infof("Got providerID %s", providerID)
+	u.log.Info("Got providerID", "provider-id", providerID)
 	return providerID, nil
 }
 
 func (u *ControlPlaneUpgrader) deleteMachine(machine *clusterapiv1alpha1.Machine) error {
-	logrus.Infof("Deleting existing machine: %s/%s", machine.Namespace, machine.Name)
+	u.log.Info("Deleting existing machine", "namespace", machine.Namespace, "name", machine.Name)
 
 	propagationPolicy := metav1.DeletePropagationForeground
 	deleteOptions := &metav1.DeleteOptions{
@@ -445,7 +439,7 @@ func hostnameForNode(node *v1.Node) string {
 
 // componentHealthCheck checks that the etcd, apiserver, scheduler, and controller manager static pods are healthy.
 func (u *ControlPlaneUpgrader) componentHealthCheck(nodeHostname string) bool {
-	logrus.Infof("Component health check for node hostname %s", nodeHostname)
+	u.log.Info("Component health check for node", "hostname", nodeHostname)
 
 	components := []string{"etcd", "kube-apiserver", "kube-scheduler", "kube-controller-manager"}
 	requiredConditions := sets.NewString("PodScheduled", "Initialized", "Ready", "ContainersReady")
@@ -454,7 +448,7 @@ func (u *ControlPlaneUpgrader) componentHealthCheck(nodeHostname string) bool {
 		foundConditions := sets.NewString()
 
 		podName := fmt.Sprintf("%s-%v", component, nodeHostname)
-		log := logrus.WithField("pod", podName)
+		log := u.log.WithValues("pod", podName)
 
 		log.Info("Getting pod")
 		pod, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").Get(podName, metav1.GetOptions{})
@@ -462,7 +456,7 @@ func (u *ControlPlaneUpgrader) componentHealthCheck(nodeHostname string) bool {
 			log.Info("Pod not found yet")
 			return false
 		} else if err != nil {
-			log.WithError(err).Error("error getting pod")
+			log.Error(err, "error getting pod")
 			return false
 		}
 
@@ -475,7 +469,7 @@ func (u *ControlPlaneUpgrader) componentHealthCheck(nodeHostname string) bool {
 		missingConditions := requiredConditions.Difference(foundConditions)
 		if missingConditions.Len() > 0 {
 			missingDescription := strings.Join(missingConditions.List(), ",")
-			log.Infof("pod is missing some required conditions: %s", missingDescription)
+			log.Info("pod is missing some required conditions", "conditions", missingDescription)
 			return false
 		}
 	}
@@ -490,7 +484,7 @@ func (u *ControlPlaneUpgrader) listMachines() (*clusterapiv1alpha1.MachineList, 
 		LabelSelector: fmt.Sprintf("cluster.k8s.io/cluster-name=%s,set=controlplane", u.clusterName),
 	}
 
-	logrus.WithField("labelSelector", listOptions.LabelSelector).Info("Listing machines")
+	u.log.Info("Listing machines", "labelSelector", listOptions.LabelSelector)
 	machines, err := u.managementClusterAPIClient.Machines(u.clusterNamespace).List(listOptions)
 	if err != nil {
 		return nil, errors.Wrap(err, "error listing machines")
@@ -500,7 +494,7 @@ func (u *ControlPlaneUpgrader) listMachines() (*clusterapiv1alpha1.MachineList, 
 }
 
 func (u *ControlPlaneUpgrader) oldNodeToEtcdMemberId(timeout time.Duration) error {
-	logrus.Infof("oldNodeToEtcdMemberId")
+	u.log.Info("oldNodeToEtcdMemberId")
 	pods, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").List(metav1.ListOptions{LabelSelector: "component=etcd"})
 	if err != nil {
 		return errors.Wrap(err, "error listing etcd pods")
@@ -530,9 +524,13 @@ func (u *ControlPlaneUpgrader) oldNodeToEtcdMemberId(timeout time.Duration) erro
 	}
 
 	stdout, stderr, err := kubernetes.PodExec(opts)
+
+	// @TODO figure out how we want logs to show up in this library
+	u.log.Info(fmt.Sprintf("oldNodeToEtcdMemberId stdout: %s", stdout))
+	u.log.Info(fmt.Sprintf("oldNodeToEtcdMemberId stderr: %s", stderr))
+
 	if err != nil {
-		logrus.Errorf("etcdClusterHealthCheck stderr: %s", stderr)
-		return errors.New("no etcd member found")
+		return errors.Wrap(err, "no etcd member found")
 	}
 
 	lines := strings.Split(stdout, "\n")
@@ -556,7 +554,7 @@ func (u *ControlPlaneUpgrader) oldNodeToEtcdMemberId(timeout time.Duration) erro
 
 // deleteEtcdMember deletes the old etcd member
 func (u *ControlPlaneUpgrader) deleteEtcdMember(timeout time.Duration, newNode string, etcdMemberId string) error {
-	logrus.Infof("deleteEtcdMember")
+	u.log.Info("deleteEtcdMember")
 	pods, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").List(metav1.ListOptions{LabelSelector: "component=etcd"})
 	if err != nil {
 		return errors.Wrap(err, "error listing etcd pods")
@@ -601,11 +599,14 @@ func (u *ControlPlaneUpgrader) deleteEtcdMember(timeout time.Duration, newNode s
 	}
 
 	stdout, stderr, err := kubernetes.PodExec(opts)
+
+	// @TODO figure out how we want logs to show up in this library
+	u.log.Info(fmt.Sprintf("deleteEtcdMember stdout: %s", stdout))
+	u.log.Info(fmt.Sprintf("deleteEtcdMember stderr: %s", stderr))
+
 	if err != nil {
-		logrus.Errorf("deleteEtcdMember stderr: %s", stderr)
-		return errors.New("no etcd member found")
+		return errors.Wrap(err, "no etcd member found")
 	}
 
-	logrus.Infof("%s", stdout)
 	return nil
 }

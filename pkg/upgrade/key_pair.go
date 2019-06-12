@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,7 +43,6 @@ func (k *keyPairGetter) getKeyPair(cluster *clusterapiv1alpha1.Cluster, config K
 }
 
 func getEmbeddedKeyPair(cluster *clusterapiv1alpha1.Cluster, path string) (*KeyPair, error) {
-	logrus.Infof("getEmbeddedKeyPair, path=%s", path)
 	pathParts := strings.Split(path, ".")
 	certPath := append(pathParts, "cert")
 	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cluster)
@@ -83,7 +81,6 @@ func getEmbeddedKeyPair(cluster *clusterapiv1alpha1.Cluster, path string) (*KeyP
 }
 
 func (k *keyPairGetter) getSecretRefKeyPair(secretNamespace, secretName string) (*KeyPair, error) {
-	logrus.Infof("getSecretKeyPair, name=%s/%s", secretNamespace, secretName)
 	secret, err := k.secretClient.Secrets(secretNamespace).Get(secretName, metav1.GetOptions{})
 	if err != nil {
 		return nil, errors.Wrap(err, "error retrieving key pair secret ref")
