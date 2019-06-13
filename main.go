@@ -66,11 +66,16 @@ func main() {
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.TargetApiEndpoint, "api-endpoint",
 		"", "Target cluster's API endpoint (optional)")
 
+	root.Flags().StringVar(&upgradeConfig.MachineUpdates.Image.ID, "image-id",
+		"", "The provider-specific image identifier to use when booting a machine (optional)")
+
+	root.Flags().StringVar(&upgradeConfig.MachineUpdates.Image.Field, "image-field",
+		"", "The image identifier field in provider manifests (optional)")
+
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
-
 
 type upgrader interface {
 	Upgrade() error

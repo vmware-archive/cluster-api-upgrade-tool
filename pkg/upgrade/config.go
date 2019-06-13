@@ -50,8 +50,8 @@ type KeyPairConfig struct {
 
 // MachineUpdateConfig contains the configuration of the machine desired.
 type MachineUpdateConfig struct {
-	Image        *ImageUpdateConfig `json:"image,omitempty"`
-	MachineClass string             `json:"machineClass,omitempty"`
+	Image        ImageUpdateConfig `json:"image,omitempty"`
+	MachineClass string            `json:"machineClass,omitempty"`
 }
 
 // ImageUpdateConfig is something
@@ -68,6 +68,7 @@ func ValidateArgs(config Config) error {
 	if config.TargetCluster.CAKeyPair.ClusterField == "" && config.TargetCluster.CAKeyPair.SecretRef == "" {
 		return errors.New("one of key pair cluster field or secret ref must be set")
 	}
+
 	validUpgradeScope := false
 	for _, scope := range config.TargetCluster.UpgradeScopes() {
 		if config.TargetCluster.UpgradeScope == scope {
@@ -78,8 +79,15 @@ func ValidateArgs(config Config) error {
 	if !validUpgradeScope {
 		return fmt.Errorf("invalid upgrade scope, must be one of %v", config.TargetCluster.UpgradeScopes())
 	}
+
 	if _, err := semver.ParseTolerant(config.KubernetesVersion); err != nil {
 		return fmt.Errorf("Invalid Kubernetes version: %v", config.KubernetesVersion)
 	}
+
+	if (config.MachineUpdates.Image.ID == "" && config.MachineUpdates.Image.Field != "") ||
+		(config.MachineUpdates.Image.ID != "" && config.MachineUpdates.Image.Field == "") {
+		return errors.New("when specifying image id, image field is required (and vice versa)")
+	}
+
 	return nil
 }

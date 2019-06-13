@@ -27,6 +27,7 @@ type base struct {
 	targetRestConfig           *rest.Config
 	targetKubernetesClient     kubernetes.Interface
 	providerIDsToNodes         map[string]*v1.Node
+	imageField, imageID        string
 }
 
 func newBase(log logr.Logger, config Config) (*base, error) {
@@ -104,6 +105,8 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 		managementClusterAPIClient: managementClusterAPIClient,
 		targetRestConfig:           targetRestConfig,
 		targetKubernetesClient:     targetKubernetesClient,
+		imageField:                 config.MachineUpdates.Image.Field,
+		imageID:                    config.MachineUpdates.Image.ID,
 	}, nil
 }
 
