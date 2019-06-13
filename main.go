@@ -39,38 +39,38 @@ func main() {
 	}
 
 	root.Flags().StringVar(&upgradeConfig.ManagementCluster.Kubeconfig, "kubeconfig",
-		upgradeConfig.ManagementCluster.Kubeconfig, "The kubeconfig path for the management cluster (required)")
+		"", "The kubeconfig path for the management cluster (required)")
+	root.MarkFlagRequired("kubeconfig")
 
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.Namespace,
-		"cluster-namespace", upgradeConfig.TargetCluster.Name, "The namespace of target cluster (required)")
+		"cluster-namespace", "", "The namespace of target cluster (required)")
+	root.MarkFlagRequired("cluster-namespace")
 
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.Name, "cluster-name", upgradeConfig.TargetCluster.Name,
+	root.Flags().StringVar(&upgradeConfig.TargetCluster.Name, "cluster-name", "",
 		"The name of target cluster (required)")
+	root.MarkFlagRequired("cluster-name")
 
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.SecretRef, "ca-secret",
-		upgradeConfig.TargetCluster.CAKeyPair.SecretRef, "TODO")
+	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.SecretRef, "ca-secret", "", "TODO")
 
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.ClusterField, "ca-field",
 		"spec.providerSpec.value.caKeyPair", "The CA field in provider manifests (optional)")
 
-	root.Flags().StringVar(&upgradeConfig.KubernetesVersion, "kubernetes-version", upgradeConfig.KubernetesVersion,
+	root.Flags().StringVar(&upgradeConfig.KubernetesVersion, "kubernetes-version", "",
 		"Desired kubernetes version to upgrade to (required)")
+	root.MarkFlagRequired("kubernetes-version")
 
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.UpgradeScope, "scope", upgradeConfig.TargetCluster.UpgradeScope,
+	root.Flags().StringVar(&upgradeConfig.TargetCluster.UpgradeScope, "scope", "",
 		"Scope of upgrade - [control-plane | machine-deployment] (required)")
+	root.MarkFlagRequired("scope")
 
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.TargetApiEndpoint, "api-endpoint",
-		upgradeConfig.TargetCluster.TargetApiEndpoint, "Target cluster's API endpoint (optional)")
+		"", "Target cluster's API endpoint (optional)")
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-const (
-	upgradeScopeControlPlane      = "control-plane"
-	upgradeScopeMachineDeployment = "machine-deployment"
-)
 
 type upgrader interface {
 	Upgrade() error
@@ -84,9 +84,9 @@ func upgradeCluster(config upgrade.Config) error {
 	)
 
 	switch config.TargetCluster.UpgradeScope {
-	case upgradeScopeControlPlane:
+	case upgrade.ControlPlaneScope:
 		upgrader, err = upgrade.NewControlPlaneUpgrader(log, config)
-	case upgradeScopeMachineDeployment:
+	case upgrade.MachineDeploymentScope:
 		upgrader, err = upgrade.NewMachineDeploymentUpgrader(log, config)
 	default:
 		return errors.Errorf("invalid scope %q", config.TargetCluster.UpgradeScope)

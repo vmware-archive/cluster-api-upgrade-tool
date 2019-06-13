@@ -10,6 +10,11 @@ import (
 	"github.com/pkg/errors"
 )
 
+const (
+	ControlPlaneScope      = "control-plane"
+	MachineDeploymentScope = "machine-deployment"
+)
+
 // Config contains all the configurations necessary to upgrade a Kubernetes cluster.
 type Config struct {
 	ManagementCluster ManagementClusterConfig `json:"managementCluster"`
@@ -33,6 +38,10 @@ type TargetClusterConfig struct {
 	UpgradeScope      string        `json:"scope"`
 }
 
+func (t *TargetClusterConfig) UpgradeScopes() []string {
+	return []string{ControlPlaneScope, MachineDeploymentScope}
+}
+
 // KeyPairConfig is something
 type KeyPairConfig struct {
 	SecretRef    string `json:"secretRef,omitempty"`
@@ -53,20 +62,21 @@ type ImageUpdateConfig struct {
 
 // ValidateArgs validates the configuration passed in and returns the first validation error encountered.
 func ValidateArgs(config Config) error {
-	if config.TargetCluster.Namespace == "" {
-		return errors.New("target cluster namespace is required")
-	}
-	if config.TargetCluster.Name == "" {
-		return errors.New("target cluster name is required")
-	}
 	if config.TargetCluster.CAKeyPair.ClusterField != "" && config.TargetCluster.CAKeyPair.SecretRef != "" {
 		return errors.New("only one of key pair cluster field and secret ref may be set")
 	}
 	if config.TargetCluster.CAKeyPair.ClusterField == "" && config.TargetCluster.CAKeyPair.SecretRef == "" {
 		return errors.New("one of key pair cluster field or secret ref must be set")
 	}
-	if config.KubernetesVersion == "" {
-		return errors.New("kubernetes version is required")
+	validUpgradeScope := false
+	for _, scope := range config.TargetCluster.UpgradeScopes() {
+		if config.TargetCluster.UpgradeScope == scope {
+			validUpgradeScope = true
+			break
+		}
+	}
+	if !validUpgradeScope {
+		return fmt.Errorf("invalid upgrade scope, must be one of %v", config.TargetCluster.UpgradeScopes())
 	}
 	if _, err := semver.ParseTolerant(config.KubernetesVersion); err != nil {
 		return fmt.Errorf("Invalid Kubernetes version: %v", config.KubernetesVersion)
