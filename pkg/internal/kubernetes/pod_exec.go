@@ -5,7 +5,7 @@ package kubernetes
 
 import (
 	"bytes"
-	"time"
+	"context"
 
 	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
@@ -22,18 +22,17 @@ type PodExecInput struct {
 	Name             string
 	Container        string
 	Command          []string
-	Timeout          time.Duration
 }
 
-func PodExec(input PodExecInput) (string, string, error) {
+func PodExec(ctx context.Context, input PodExecInput) (string, string, error) {
 	req := input.KubernetesClient.CoreV1().RESTClient().Post().
 		Resource("pods").
-		Namespace(input.Namespace). //"kube-system").
-		Name(input.Name).           //"etcd-ip-10-0-0-61.us-west-2.compute.internal").
+		Namespace(input.Namespace).
+		Name(input.Name).
 		SubResource("exec")
 	req.VersionedParams(&v1.PodExecOptions{
 		Container: input.Container,
-		Command:   input.Command, //[]string{"etcdctl", "--ca-file", "/etc/kubernetes/pki/etcd/ca.crt", "--cert-file", "/etc/kubernetes/pki/etcd/peer.crt", "--key-file", "/etc/kubernetes/pki/etcd/peer.key", "--endpoints=https://10.0.0.61:2379", "cluster-health"}, // @TODO: edit this to compose later
+		Command:   input.Command,
 		Stdout:    true,
 		Stderr:    true,
 	}, scheme.ParameterCodec)
@@ -55,17 +54,10 @@ func PodExec(input PodExecInput) (string, string, error) {
 		errCh <- executor.Stream(streamOptions)
 	}()
 
-	var timeoutCh <-chan time.Time
-	if input.Timeout > 0 {
-		timer := time.NewTimer(input.Timeout)
-		defer timer.Stop()
-		timeoutCh = timer.C
-	}
-
 	select {
 	case err = <-errCh:
-	case <-timeoutCh:
-		return "", "", errors.Errorf("pod exec timed out after %v", input.Timeout)
+	case <-ctx.Done():
+		return "", "", errors.New("pod exec timed out")
 	}
 
 	return stdout.String(), stderr.String(), err
