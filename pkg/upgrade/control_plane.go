@@ -33,6 +33,17 @@ type ControlPlaneUpgrader struct {
 	oldNodeToEtcdMember map[string]string
 }
 
+func NewTestableControlPlaneUpgrader(log logr.Logger, cmn ConfigMapNamespacer, pn PodNamespacer, nc NodeClient) *ControlPlaneUpgrader {
+	return &ControlPlaneUpgrader{
+		base: &base{
+			log: log,
+			configMapNamespacer: cmn,
+			nodeClient: nc,
+			podNamespacer: pn,
+		},
+	}
+}
+
 func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgrader, error) {
 	b, err := newBase(log, config)
 	if err != nil {
@@ -116,7 +127,7 @@ func (u *ControlPlaneUpgrader) minMaxControlPlaneVersions(machines *clusterapiv1
 func (u *ControlPlaneUpgrader) updateKubeletConfigMapIfNeeded(version semver.Version) error {
 	// Check if the desired configmap already exists
 	desiredKubeletConfigMapName := fmt.Sprintf("kubelet-config-%d-%d", version.Major, version.Minor)
-	_, err := u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Get(desiredKubeletConfigMapName, metav1.GetOptions{})
+	_, err := u.configMapNamespacer.ConfigMaps("kube-system").Get(desiredKubeletConfigMapName, metav1.GetOptions{})
 	if err == nil {
 		u.log.Info("kubelet configmap already exists", "configMapName", desiredKubeletConfigMapName)
 		return nil
@@ -127,14 +138,14 @@ func (u *ControlPlaneUpgrader) updateKubeletConfigMapIfNeeded(version semver.Ver
 
 	// If we get here, we have to make the configmap
 	previousMinorVersionKubeletConfigMapName := fmt.Sprintf("kubelet-config-%d-%d", version.Major, version.Minor-1)
-	cm, err := u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Get(previousMinorVersionKubeletConfigMapName, metav1.GetOptions{})
+	cm, err := u.configMapNamespacer.ConfigMaps("kube-system").Get(previousMinorVersionKubeletConfigMapName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return errors.Errorf("unable to find current kubelet configmap %s", previousMinorVersionKubeletConfigMapName)
 	}
 	cm.Name = desiredKubeletConfigMapName
 	cm.ResourceVersion = ""
 
-	_, err = u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Create(cm)
+	_, err = u.configMapNamespacer.ConfigMaps("kube-system").Create(cm)
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "error creating configmap %s", desiredKubeletConfigMapName)
 	}
@@ -420,7 +431,7 @@ func (u *ControlPlaneUpgrader) componentHealthCheck(nodeHostname string) bool {
 		log := u.log.WithValues("pod", podName)
 
 		log.Info("Getting pod")
-		pod, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").Get(podName, metav1.GetOptions{})
+		pod, err := u.podNamespacer.Pods("kube-system").Get(podName, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			log.Info("Pod not found yet")
 			return false
@@ -523,7 +534,7 @@ func (u *ControlPlaneUpgrader) deleteEtcdMember(timeout time.Duration, newNode s
 
 func (u *ControlPlaneUpgrader) listEtcdPods() ([]v1.Pod, error) {
 	// get pods in kube-system with label component=etcd
-	list, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").List(metav1.ListOptions{LabelSelector: "component=etcd"})
+	list, err := u.podNamespacer.Pods("kube-system").List(metav1.ListOptions{LabelSelector: "component=etcd"})
 	if err != nil {
 		return []v1.Pod{}, errors.Wrap(err, "error listing pods")
 	}

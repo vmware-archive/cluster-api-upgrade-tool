@@ -17,12 +17,34 @@ import (
 	clusterapiv1alpha1client "sigs.k8s.io/cluster-api/pkg/client/clientset_generated/clientset/typed/cluster/v1alpha1"
 )
 
+type ConfigMapNamespacer interface {
+	ConfigMaps(string) NamespacedConfigMapClient
+}
+type NamespacedConfigMapClient interface {
+	Get(string, metav1.GetOptions) (*v1.ConfigMap, error)
+	Create(*v1.ConfigMap) (*v1.ConfigMap, error)
+}
+type PodNamespacer interface {
+	Pods(string) NamespacedPodsClient
+}
+type NamespacedPodsClient interface {
+	Get(string, metav1.GetOptions) (*v1.Pod, error)
+	List(options metav1.ListOptions) (*v1.PodList, error)
+}
+
+type NodeClient interface {
+	List(options metav1.ListOptions) (*v1.NodeList, error)
+}
+
 type base struct {
 	log                        logr.Logger
 	userVersion                semver.Version
 	desiredVersion             semver.Version
 	clusterNamespace           string
 	clusterName                string
+	configMapNamespacer ConfigMapNamespacer
+	nodeClient NodeClient
+	podNamespacer PodNamespacer
 	managementClusterAPIClient clusterapiv1alpha1client.ClusterV1alpha1Interface
 	targetRestConfig           *rest.Config
 	targetKubernetesClient     kubernetes.Interface
@@ -119,7 +141,7 @@ func (u *base) GetNodeFromProviderID(providerID string) *v1.Node {
 // providerID : Node
 func (u *base) UpdateProviderIDsToNodes() error {
 	u.log.Info("Updating provider IDs to nodes")
-	nodes, err := u.targetKubernetesClient.CoreV1().Nodes().List(metav1.ListOptions{})
+	nodes, err := u.nodeClient.List(metav1.ListOptions{})
 	if err != nil {
 		return errors.Wrap(err, "error listing nodes")
 	}
