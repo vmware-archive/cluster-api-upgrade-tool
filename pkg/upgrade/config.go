@@ -34,7 +34,7 @@ type TargetClusterConfig struct {
 	Namespace         string        `json:"namespace"`
 	Name              string        `json:"name"`
 	CAKeyPair         KeyPairConfig `json:"caKeyPair"`
-	TargetApiEndpoint string        `json:"api-endpoint"`
+	TargetApiEndpoint string        `json:"apiEndpoint"`
 	UpgradeScope      string        `json:"scope"`
 }
 
