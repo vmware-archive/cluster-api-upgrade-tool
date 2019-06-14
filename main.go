@@ -63,14 +63,13 @@ func main() {
 		"Scope of upgrade - [control-plane | machine-deployment] (required)")
 	root.MarkFlagRequired("scope")
 
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.TargetApiEndpoint, "api-endpoint",
-		"", "Target cluster's API endpoint (optional)")
+	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.APIEndpoint, "api-endpoint",
+		"", "Target cluster's API endpoint and port. For example: https://example.com:6443. Required with --ca-secret OR --ca-field. Ignored with --kubeconfig-secret-ref.")
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
-
 
 type upgrader interface {
 	Upgrade() error
