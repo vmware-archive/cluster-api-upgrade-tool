@@ -50,10 +50,14 @@ func main() {
 		"The name of target cluster (required)")
 	root.MarkFlagRequired("cluster-name")
 
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.SecretRef, "ca-secret", "", "TODO")
+	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.SecretRef, "ca-secret", "",
+		"A name of a kubernetes secret containing a CA key and certificate with which we generate a kubeconfig. ")
 
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.ClusterField, "ca-field",
-		"spec.providerSpec.value.caKeyPair", "The CA field in provider manifests (optional)")
+		"", "The CA field in provider manifests. Example: cluster-api-provider-aws clusters may use spec.providerSpec.value.caKeyPair (optional)")
+
+	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.KubeconfigSecretRef, "kubeconfig-secret-ref", "",
+		"A name to a kubeconfig that can connect to the target cluster. Must exist in the namespace passed in.")
 
 	root.Flags().StringVar(&upgradeConfig.KubernetesVersion, "kubernetes-version", "",
 		"Desired kubernetes version to upgrade to (required)")

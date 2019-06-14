@@ -4,6 +4,7 @@
 package upgrade
 
 import (
+	"encoding/base64"
 	"fmt"
 
 	"github.com/blang/semver"
@@ -77,16 +78,15 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 		return nil, errors.Wrap(err, "error creating management kubernetes client")
 	}
 
-	log.Info("Getting key pair")
-	keyPair, err := newKeyPairGetter(managementKubernetesClient.CoreV1()).getKeyPair(cluster, config.TargetCluster.CAKeyPair)
+	targetRestConfig, err := GetRestConfig(
+		managementKubernetesClient.CoreV1().Secrets(cluster.GetNamespace()),
+		base64.StdEncoding,
+		&kubeconfig{},
+		cluster,
+		targetClusterURL,
+		config.TargetCluster.CAKeyPair)
 	if err != nil {
-		return nil, err
-	}
-
-	log.Info("Generating target rest config from key pair")
-	targetRestConfig, err := restConfigFromKeyPair(cluster.GetName(), targetClusterURL, keyPair)
-	if err != nil {
-		return nil, err
+		return nil, errors.WithStack(err)
 	}
 
 	log.Info("Creating target kubernetes client")

@@ -42,10 +42,12 @@ func (t *TargetClusterConfig) UpgradeScopes() []string {
 	return []string{ControlPlaneScope, MachineDeploymentScope}
 }
 
-// KeyPairConfig is something
+// KeyPairConfig contains information about how to get a kubeconfig.
+// Only one field should ever be set.
 type KeyPairConfig struct {
 	SecretRef    string `json:"secretRef,omitempty"`
 	ClusterField string `json:"clusterField,omitempty"`
+	KubeconfigSecretRef string `json:"kubeconfigSecretRef,omitempty"`
 }
 
 // MachineUpdateConfig contains the configuration of the machine desired.
