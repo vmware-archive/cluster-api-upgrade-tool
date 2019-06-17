@@ -60,5 +60,5 @@ func PodExec(ctx context.Context, input PodExecInput) (string, string, error) {
 		return "", "", errors.New("pod exec timed out")
 	}
 
-	return stdout.String(), stderr.String(), err
+	return stdout.String(), stderr.String(), errors.WithStack(err)
 }

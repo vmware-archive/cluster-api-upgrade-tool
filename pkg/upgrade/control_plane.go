@@ -199,7 +199,7 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 
 		_, err = u.targetKubernetesClient.RbacV1().RoleBindings("kube-system").Create(newRoleBinding)
 		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return err
+			return errors.Wrapf(err, "error creating rolebinding %s", roleName)
 		}
 	} else if err != nil {
 		return errors.Wrapf(err, "error determining if rolebinding %s exists", roleName)
@@ -400,7 +400,8 @@ func (u *ControlPlaneUpgrader) deleteMachine(machine *clusterapiv1alpha1.Machine
 		PropagationPolicy: &propagationPolicy,
 	}
 
-	return u.managementClusterAPIClient.Machines(u.clusterNamespace).Delete(machine.Name, deleteOptions)
+	err := u.managementClusterAPIClient.Machines(u.clusterNamespace).Delete(machine.Name, deleteOptions)
+	return errors.WithStack(err)
 }
 
 func hostnameForNode(node *v1.Node) string {
