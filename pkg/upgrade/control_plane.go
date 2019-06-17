@@ -234,7 +234,7 @@ func (u *ControlPlaneUpgrader) addMachine(source *clusterapiv1alpha1.Machine) (*
 	newMachine.Spec.Versions.ControlPlane = u.desiredVersion.String()
 	newMachine.Spec.Versions.Kubelet = u.desiredVersion.String()
 
-	u.log.Info("Creating new machine", "name", newMachine)
+	u.log.Info("Creating new machine", "name", newMachine.GetName())
 
 	createdMachine, err := u.managementClusterAPIClient.Machines(u.clusterNamespace).Create(newMachine)
 	if err != nil {
