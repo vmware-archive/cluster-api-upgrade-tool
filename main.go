@@ -55,6 +55,9 @@ func main() {
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.ClusterField, "ca-field",
 		"spec.providerSpec.value.caKeyPair", "The CA field in provider manifests (optional)")
 
+	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.KubeconfigSecretRef, "kubeconfig-secret", "",
+		"The name of the secret the kubeconfig is stored in. Assumed to be in the same namespace as the cluster object.")
+
 	root.Flags().StringVar(&upgradeConfig.KubernetesVersion, "kubernetes-version", "",
 		"Desired kubernetes version to upgrade to (required)")
 	root.MarkFlagRequired("kubernetes-version")
