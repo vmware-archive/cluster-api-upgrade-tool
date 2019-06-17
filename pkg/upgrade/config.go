@@ -4,8 +4,6 @@
 package upgrade
 
 import (
-	"fmt"
-
 	"github.com/blang/semver"
 	"github.com/pkg/errors"
 )
@@ -102,11 +100,11 @@ func ValidateArgs(config Config) error {
 		}
 	}
 	if !validUpgradeScope {
-		return fmt.Errorf("invalid upgrade scope, must be one of %v", config.TargetCluster.UpgradeScopes())
+		return errors.Errorf("invalid upgrade scope, must be one of %v", config.TargetCluster.UpgradeScopes())
 	}
 
 	if _, err := semver.ParseTolerant(config.KubernetesVersion); err != nil {
-		return fmt.Errorf("Invalid Kubernetes version: %q", config.KubernetesVersion)
+		return errors.Errorf("Invalid Kubernetes version: %q", config.KubernetesVersion)
 	}
 
 	if (config.MachineUpdates.Image.ID == "" && config.MachineUpdates.Image.Field != "") ||
