@@ -4,8 +4,6 @@
 package upgrade
 
 import (
-	"fmt"
-
 	"github.com/blang/semver"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
@@ -59,18 +57,6 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	clusterEndPoint := config.TargetCluster.TargetApiEndpoint
-	if len(cluster.Status.APIEndpoints) > 0 {
-		clusterEndPoint = cluster.Status.APIEndpoints[0].Host
-	}
-
-	if clusterEndPoint == "" {
-		return nil, errors.New("cluster has no api endpoints and its also not provided as an input")
-	}
-
-	// TODO .Port is 443, but for CAPA, the ELB is on 6443
-	targetClusterURL := fmt.Sprintf("https://%s:%d", clusterEndPoint, 6443)
-	log.Info("Determined target cluster apiserver endpoint", "url", targetClusterURL)
 
 	log.Info("Creating management kubernetes client")
 	managementKubernetesClient, err := kubernetes.NewForConfig(managementRestConfig)
@@ -85,7 +71,7 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 	}
 
 	log.Info("Generating target rest config from key pair")
-	targetRestConfig, err := restConfigFromKeyPair(cluster.GetName(), targetClusterURL, keyPair)
+	targetRestConfig, err := restConfigFromKeyPair(cluster.GetName(), config.TargetCluster.CAKeyPair.APIEndpoint, keyPair)
 	if err != nil {
 		return nil, err
 	}
