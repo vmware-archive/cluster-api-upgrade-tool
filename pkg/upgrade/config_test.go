@@ -50,12 +50,88 @@ func TestInvalidArgs(t *testing.T) {
 			name: "empty configuration",
 			cfg:  upgrade.Config{},
 		},
+		{
+			name: "secret ref and cluster field defined",
+			cfg: upgrade.Config{
+				TargetCluster: upgrade.TargetClusterConfig{
+					CAKeyPair: upgrade.KeyPairConfig{
+						SecretRef:    "some-ref",
+						ClusterField: "some.field",
+					},
+				},
+			},
+		},
+		{
+			name: "secret ref and kubeconfig secret ref defined",
+			cfg: upgrade.Config{
+				TargetCluster: upgrade.TargetClusterConfig{
+					CAKeyPair: upgrade.KeyPairConfig{
+						SecretRef:           "some-ref",
+						KubeconfigSecretRef: "some-other-ref",
+					},
+				},
+			},
+		},
+		{
+			name: "kubeconfig secret ref and ca field defined",
+			cfg: upgrade.Config{
+				TargetCluster: upgrade.TargetClusterConfig{
+					CAKeyPair: upgrade.KeyPairConfig{
+						KubeconfigSecretRef: "some-ref",
+						ClusterField:        "some.field",
+					},
+				},
+			},
+		},
+		{
+			name: "secret ref and no APIEndpoint",
+			cfg: upgrade.Config{
+				TargetCluster: upgrade.TargetClusterConfig{
+					CAKeyPair: upgrade.KeyPairConfig{
+						SecretRef: "some-ref",
+					},
+				},
+			},
+		},
+		{
+			name: "ca field and no APIEndpoint",
+			cfg: upgrade.Config{
+				TargetCluster: upgrade.TargetClusterConfig{
+					CAKeyPair: upgrade.KeyPairConfig{
+						ClusterField: "some.field",
+					},
+				},
+			},
+		},
+		{
+			name: "invalid cluster upgrade scope",
+			cfg: upgrade.Config{
+				TargetCluster: upgrade.TargetClusterConfig{
+					UpgradeScope: "some-invalid-upgrade-scope",
+					CAKeyPair: upgrade.KeyPairConfig{
+						KubeconfigSecretRef: "some-ref",
+					},
+				},
+			},
+		},
+		{
+			name: "invalid kubernetes version",
+			cfg: upgrade.Config{
+				KubernetesVersion: "some-bad-version",
+				TargetCluster: upgrade.TargetClusterConfig{
+					UpgradeScope: upgrade.ControlPlaneScope,
+					CAKeyPair: upgrade.KeyPairConfig{
+						KubeconfigSecretRef: "some-ref",
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := upgrade.ValidateArgs(tc.cfg); err == nil {
-				t.Fatalf("%+v", err)
+				t.Fatal("Expected an error but didn't receive one")
 			}
 		})
 	}
