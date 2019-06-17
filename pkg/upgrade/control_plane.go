@@ -225,6 +225,12 @@ func (u *ControlPlaneUpgrader) addMachine(source *clusterapiv1alpha1.Machine) (*
 	}
 	newMachine.Name = fmt.Sprintf("%s-%s-%d", nameParts[0], nameParts[1], time.Now().Unix())
 
+	if u.imageField != "" && u.imageID != "" {
+		if err := updateMachineSpecImage(&newMachine.Spec, u.imageField, u.imageID); err != nil {
+			return nil, err
+		}
+	}
+
 	newMachine.Spec.Versions.ControlPlane = u.desiredVersion.String()
 	newMachine.Spec.Versions.Kubelet = u.desiredVersion.String()
 

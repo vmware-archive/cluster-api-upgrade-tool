@@ -80,6 +80,12 @@ func (u *MachineDeploymentUpgrader) updateMachineDeployment(machineDeployment *c
 	// Make the modification(s)
 	machineDeployment.Spec.Template.Spec.Versions.Kubelet = u.desiredVersion.String()
 
+	if u.imageField != "" && u.imageID != "" {
+		if err := updateMachineSpecImage(&machineDeployment.Spec.Template.Spec, u.imageField, u.imageID); err != nil {
+			return err
+		}
+	}
+
 	// Get the updated version in json
 	updated, err := json.Marshal(machineDeployment)
 	if err != nil {
