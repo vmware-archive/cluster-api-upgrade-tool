@@ -8,42 +8,55 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/cluster-api-provider-aws/pkg/cloud/aws/services/certificates"
-	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
+	clusterv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
 )
 
+// KubeconfigSecretKey is the key where the kubeconfig is stored in the secret.
+const KubeconfigSecretKey = "kubeconfig"
+
 // KeyPair contains a cert and key.
-type KeyPair struct {
+type keyPair struct {
 	Cert []byte `json:"cert"`
 	Key  []byte `json:"key"`
 }
 
-type keyPairGetter struct {
-	secretClient corev1client.SecretsGetter
+// This has already been scoped to namespace, so, .Secrets("my-namespace") returns one of these.
+type secrets interface {
+	Get(string, metav1.GetOptions) (*v1.Secret, error)
 }
 
-func newKeyPairGetter(secretClient corev1client.SecretsGetter) *keyPairGetter {
-	return &keyPairGetter{
-		secretClient: secretClient,
-	}
-}
-
-func (k *keyPairGetter) getKeyPair(cluster *clusterapiv1alpha1.Cluster, config KeyPairConfig) (*KeyPair, error) {
-	if config.ClusterField != "" {
-		return getEmbeddedKeyPair(cluster, config.ClusterField)
+// NewRestConfigFromKubeconfigSecretRef decodes the kubeconfig stored in a secret and builds a *rest.Config with it.
+func NewRestConfigFromKubeconfigSecretRef(secrets secrets, name string) (*rest.Config, error) {
+	secret, err := secrets.Get(name, metav1.GetOptions{})
+	if err != nil {
+		return nil, errors.WithStack(err)
 	}
 
-	return k.getSecretRefKeyPair(cluster.Namespace, config.SecretRef)
+	kc, ok := secret.Data[KubeconfigSecretKey]
+	if !ok {
+		return nil, errors.Errorf("item 'kubeconfig' not found in secret %q", name)
+	}
+	out := make([]byte, base64.StdEncoding.DecodedLen(len(kc)))
+	n, err := base64.StdEncoding.Decode(out, kc)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	out = out[:n]
+	return clientcmd.RESTConfigFromKubeConfig(out)
 }
 
-func getEmbeddedKeyPair(cluster *clusterapiv1alpha1.Cluster, path string) (*KeyPair, error) {
-	pathParts := strings.Split(path, ".")
+// NewRestConfigFromClusterField returns a rest.Config configured with the CA key pair found in the cluster's
+// object in the fieldpath specified. For example, "spec.providerSpec.value.caKeyPair" traverses the cluster
+// object going through each '.' delimited field.
+func NewRestConfigFromClusterField(cluster *clusterv1alpha1.Cluster, fieldPath, apiEndpoint string) (*rest.Config, error) {
+	pathParts := strings.Split(fieldPath, ".")
 	certPath := append(pathParts, "cert")
 	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cluster)
 	if err != nil {
@@ -73,15 +86,16 @@ func getEmbeddedKeyPair(cluster *clusterapiv1alpha1.Cluster, path string) (*KeyP
 	if _, err = base64.StdEncoding.Decode(key, []byte(keyEncoded)); err != nil {
 		return nil, errors.Wrap(err, "error decoding key pair key from secret")
 	}
-
-	return &KeyPair{
+	kp := &keyPair{
 		Cert: cert,
 		Key:  key,
-	}, nil
+	}
+	return restConfigFromKeyPair(cluster.GetName(), apiEndpoint, kp)
 }
 
-func (k *keyPairGetter) getSecretRefKeyPair(secretNamespace, secretName string) (*KeyPair, error) {
-	secret, err := k.secretClient.Secrets(secretNamespace).Get(secretName, metav1.GetOptions{})
+// NewRestConfigFromCASecretRef gets the CA key pair from the secret and builds a *rest.Config with them.
+func NewRestConfigFromCASecretRef(secretClient secrets, name, clusterName, apiEndpoint string) (*rest.Config, error) {
+	secret, err := secretClient.Get(name, metav1.GetOptions{})
 	if err != nil {
 		return nil, errors.Wrap(err, "error retrieving key pair secret ref")
 	}
@@ -104,13 +118,14 @@ func (k *keyPairGetter) getSecretRefKeyPair(secretNamespace, secretName string) 
 		return nil, errors.Wrap(err, "error decoding key pair key from secret")
 	}
 
-	return &KeyPair{
+	kp := &keyPair{
 		Cert: cert,
 		Key:  key,
-	}, nil
+	}
+	return restConfigFromKeyPair(clusterName, apiEndpoint, kp)
 }
 
-func restConfigFromKeyPair(clusterName, url string, keyPair *KeyPair) (*rest.Config, error) {
+func restConfigFromKeyPair(clusterName, url string, keyPair *keyPair) (*rest.Config, error) {
 	// Borrowed from CAPA
 	cert, err := certificates.DecodeCertPEM(keyPair.Cert)
 	if err != nil {
