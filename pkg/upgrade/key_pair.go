@@ -18,18 +18,18 @@ import (
 	clusterv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
 )
 
-// KubeconfigSecretKey is the key where the kubeconfig is stored in the secret.
-const KubeconfigSecretKey = "kubeconfig"
+// kubeconfigSecretKey is the key where the kubeconfig is stored in the secret.
+const kubeconfigSecretKey = "kubeconfig"
 
-// KeyPair contains a cert and key.
+// keyPair contains a cert and key.
 type keyPair struct {
 	Cert []byte `json:"cert"`
 	Key  []byte `json:"key"`
 }
 
-// This has already been scoped to namespace, so, .Secrets("my-namespace") returns one of these.
+// secrets has already been scoped to namespace, so, .Secrets("my-namespace") returns one of these.
 type secrets interface {
-	Get(string, metav1.GetOptions) (*v1.Secret, error)
+	Get(name string, opts metav1.GetOptions) (*v1.Secret, error)
 }
 
 // NewRestConfigFromKubeconfigSecretRef decodes the kubeconfig stored in a secret and builds a *rest.Config with it.
@@ -39,23 +39,19 @@ func NewRestConfigFromKubeconfigSecretRef(secrets secrets, name string) (*rest.C
 		return nil, errors.WithStack(err)
 	}
 
-	kc, ok := secret.Data[KubeconfigSecretKey]
+	// No need to decode from b64 since that's a kubectl thing
+	kc, ok := secret.Data[kubeconfigSecretKey]
 	if !ok {
 		return nil, errors.Errorf("item 'kubeconfig' not found in secret %q", name)
 	}
-	out := make([]byte, base64.StdEncoding.DecodedLen(len(kc)))
-	n, err := base64.StdEncoding.Decode(out, kc)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	out = out[:n]
-	return clientcmd.RESTConfigFromKubeConfig(out)
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(kc)
+	return cfg, errors.WithStack(err)
 }
 
-// NewRestConfigFromClusterField returns a rest.Config configured with the CA key pair found in the cluster's
+// NewRestConfigFromCAClusterField returns a rest.Config configured with the CA key pair found in the cluster's
 // object in the fieldpath specified. For example, "spec.providerSpec.value.caKeyPair" traverses the cluster
 // object going through each '.' delimited field.
-func NewRestConfigFromClusterField(cluster *clusterv1alpha1.Cluster, fieldPath, apiEndpoint string) (*rest.Config, error) {
+func NewRestConfigFromCAClusterField(cluster *clusterv1alpha1.Cluster, fieldPath, apiEndpoint string) (*rest.Config, error) {
 	pathParts := strings.Split(fieldPath, ".")
 	certPath := append(pathParts, "cert")
 	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cluster)
