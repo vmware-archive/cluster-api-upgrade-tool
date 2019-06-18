@@ -64,16 +64,23 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 		return nil, errors.Wrap(err, "error creating management kubernetes client")
 	}
 
-	log.Info("Getting key pair")
-	keyPair, err := newKeyPairGetter(managementKubernetesClient.CoreV1()).getKeyPair(cluster, config.TargetCluster.CAKeyPair)
+	var targetRestConfig *rest.Config
+	secretClient := managementKubernetesClient.CoreV1().Secrets(cluster.GetNamespace())
+	// CAKeyPair should have been validated, but if not this is defining an order for us
+	if config.TargetCluster.CAKeyPair.KubeconfigSecretRef != "" {
+		targetRestConfig, err = NewRestConfigFromKubeconfigSecretRef(secretClient, config.TargetCluster.CAKeyPair.KubeconfigSecretRef)
+	} else if config.TargetCluster.CAKeyPair.SecretRef != "" {
+		targetRestConfig, err = NewRestConfigFromCASecretRef(secretClient, config.TargetCluster.CAKeyPair.SecretRef, cluster.GetName(), config.TargetCluster.CAKeyPair.APIEndpoint)
+	} else if config.TargetCluster.CAKeyPair.ClusterField != "" {
+		targetRestConfig, err = NewRestConfigFromCAClusterField(cluster, config.TargetCluster.CAKeyPair.ClusterField, config.TargetCluster.CAKeyPair.APIEndpoint)
+	}
+
 	if err != nil {
 		return nil, err
 	}
 
-	log.Info("Generating target rest config from key pair")
-	targetRestConfig, err := restConfigFromKeyPair(cluster.GetName(), config.TargetCluster.CAKeyPair.APIEndpoint, keyPair)
-	if err != nil {
-		return nil, err
+	if targetRestConfig == nil {
+		return nil, errors.New("could not get a kubeconfig for your target cluster")
 	}
 
 	log.Info("Creating target kubernetes client")
