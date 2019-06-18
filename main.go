@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/go-logr/logr"
@@ -76,6 +77,9 @@ func main() {
 		"", "The image identifier field in provider manifests (optional)")
 
 	if err := root.Execute(); err != nil {
+		// Print a stack trace, if possible. We may end up with the error message printed twice,
+		// but the stack trace can be invaluable, so we'll accept this for the time being.
+		fmt.Printf("%+v\n", err)
 		os.Exit(1)
 	}
 }
