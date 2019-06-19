@@ -54,7 +54,7 @@ func main() {
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.SecretRef, "ca-secret", "", "TODO")
 
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.ClusterField, "ca-field",
-		"spec.providerSpec.value.caKeyPair", "The CA field in provider manifests (optional)")
+		"", "The CA field in provider manifests, 'spec.providerSpec.value.caKeyPair' for the AWS provider (optional)")
 
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.KubeconfigSecretRef, "kubeconfig-secret", "",
 		"The name of the secret the kubeconfig is stored in. Assumed to be in the same namespace as the cluster object.")
