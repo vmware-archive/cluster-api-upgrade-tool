@@ -15,6 +15,16 @@ import (
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/upgrade"
 )
 
+// Code improvements:
+// TODO: replace fmt.Println with t.Log
+// TODO: instead of panicking fatal the test case
+// TODO: Look into wait.PollImmediate instead of this home-grown solution, dep might not be worth it though, depends on how much code it is
+// TODO: Figure out a better naming strategy than hardcoding. I expected this to change when this test solidifies and then more tests are added
+// TODO: CLEANUP CODE, probably use a defer. Not sure what kind of cleanup to do. Do we want to try to reuse the management cluster?
+//       should each test get its own unique cluster and then have a single global teardown of the management cluster?
+// TODO: Fixup the kubectl command to be nicer to use. It has a super weird signature right now. Suggested from review:
+//       kubectl().ForCluster(c).WithReader(r).Run("apply", "-f", "-") might be nice!
+
 func TestUpgradeScenario(t *testing.T) {
 	// spin up management cluster
 	setupManagementCluster(t)
