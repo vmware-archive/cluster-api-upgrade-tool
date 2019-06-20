@@ -76,6 +76,9 @@ func main() {
 	root.Flags().StringVar(&upgradeConfig.MachineUpdates.Image.Field, "image-field",
 		"", "The image identifier field in provider manifests (optional)")
 
+	root.Flags().StringVar(&upgradeConfig.UpgradeID, "upgrade-id", "",
+		"Unique identifier used to resume a partial upgrade (optional)")
+
 	if err := root.Execute(); err != nil {
 		// Print a stack trace, if possible. We may end up with the error message printed twice,
 		// but the stack trace can be invaluable, so we'll accept this for the time being.
@@ -108,5 +111,7 @@ func upgradeCluster(config upgrade.Config) error {
 		return err
 	}
 
+	infoMessage := fmt.Sprintf("Rerun with `--upgrade-id=%s` if this upgrade fails midway and you want to retry", config.UpgradeID)
+	log.Info(infoMessage)
 	return upgrader.Upgrade()
 }

@@ -28,6 +28,9 @@ const (
 	etcdCACertFile = "/etc/kubernetes/pki/etcd/ca.crt"
 	etcdCertFile   = "/etc/kubernetes/pki/etcd/peer.crt"
 	etcdKeyFile    = "/etc/kubernetes/pki/etcd/peer.key"
+
+	// UpgradeIDAnnotationKey is the annotation key for this tool's upgrade-id
+	UpgradeIDAnnotationKey = "upgrade-id"
 )
 
 type ControlPlaneUpgrader struct {
@@ -263,6 +266,12 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 
 	// TODO add more error logs on failure conditions
 	for _, machine := range machines.Items {
+		annotations := machine.GetAnnotations()
+		// Skip any machine that already has the annotation we're looking for
+		if val, ok := annotations[UpgradeIDAnnotationKey]; ok && val == u.upgradeID {
+			continue
+		}
+
 		if machine.Spec.ProviderID == nil {
 			u.log.Info("unable to upgrade machine as it has no spec.providerID", "name", machine.Name)
 			continue
@@ -324,8 +333,19 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 		if err := u.deleteMachine(&machine); err != nil {
 			return err
 		}
+
+		if err := u.applyAnnotation(&machine); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (u *ControlPlaneUpgrader) applyAnnotation(m *clusterapiv1alpha1.Machine) error {
+	m.Annotations[UpgradeIDAnnotationKey] = u.upgradeID
+	// TODO(chuckha): use Patch instead of Update
+	_, err := u.managementClusterAPIClient.Machines(u.clusterNamespace).Update(m)
+	return errors.WithStack(err)
 }
 
 // retry the given function for the given number of times with the given interval

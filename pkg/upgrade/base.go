@@ -4,6 +4,9 @@
 package upgrade
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/blang/semver"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
@@ -26,6 +29,7 @@ type base struct {
 	targetKubernetesClient     kubernetes.Interface
 	providerIDsToNodes         map[string]*v1.Node
 	imageField, imageID        string
+	upgradeID                  string
 }
 
 func newBase(log logr.Logger, config Config) (*base, error) {
@@ -89,6 +93,10 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 		return nil, errors.Wrap(err, "error creating target cluster client")
 	}
 
+	if config.UpgradeID == "" {
+		config.UpgradeID = fmt.Sprintf("%d", time.Now().Unix())
+	}
+
 	return &base{
 		log:                        log,
 		userVersion:                userVersion,
@@ -100,6 +108,7 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 		targetKubernetesClient:     targetKubernetesClient,
 		imageField:                 config.MachineUpdates.Image.Field,
 		imageID:                    config.MachineUpdates.Image.ID,
+		upgradeID:                  config.UpgradeID,
 	}, nil
 }
 
