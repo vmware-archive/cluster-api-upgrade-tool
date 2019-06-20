@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,15 +26,65 @@ import (
 // TODO: Fixup the kubectl command to be nicer to use. It has a super weird signature right now. Suggested from review:
 //       kubectl().ForCluster(c).WithReader(r).Run("apply", "-f", "-") might be nice!
 
+func TestMultipleControlPlaneUpgradeScenario(t *testing.T) {
+	// normal set up
+	setupManagementCluster(t)
+
+	// If these are not unique then you must tear down the management cluster or clean it thoroughly between runs
+	clusterName := "my-cluster"
+	namespace := "default"
+	numberOfControlPlaneNodes := 3
+
+	// Create a test cluster to upgrade
+	createTestCluster(t, clusterName, namespace, "v1.14.1", numberOfControlPlaneNodes)
+
+	// wait for a secret to show up
+	fmt.Println("Waiting up to 5 minutes for a the kubeconfig secret to appear")
+	if err := waitForKubeconfigSecret(clusterName, namespace); err != nil {
+		t.Fatal(err)
+	}
+
+	fmt.Println("Waiting for up to 5 minutes for etcd to be ready")
+	if err := waitForEtcdReady(clusterName, namespace, numberOfControlPlaneNodes); err != nil {
+		t.Fatalf("%+v\n", err)
+	}
+
+	fmt.Println("Starting the upgrade")
+	path, err := kind("get", "kubeconfig-path", "--name", "kind")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path = bytes.TrimSpace(path)
+	cfg := upgrade.Config{
+		KubernetesVersion: "v1.14.2",
+		ManagementCluster: upgrade.ManagementClusterConfig{
+			Kubeconfig: string(path),
+		},
+		TargetCluster: upgrade.TargetClusterConfig{
+			Name:         clusterName,
+			Namespace:    namespace,
+			UpgradeScope: upgrade.ControlPlaneScope,
+			CAKeyPair: upgrade.KeyPairConfig{
+				KubeconfigSecretRef: secretName(clusterName),
+			},
+		},
+	}
+	if err := upgradeCluster(cfg); err != nil {
+		t.Fatalf("%+v", err)
+	}
+}
+
 func TestUpgradeScenario(t *testing.T) {
 	// spin up management cluster
 	setupManagementCluster(t)
 
 	clusterName := "my-cluster"
 	namespace := "default"
+	numberOfControlPlaneNodes := 1
 
 	// Create a test cluster to upgrade
-	createTestCluster(t, clusterName, namespace, "v1.14.1")
+	createTestCluster(t, clusterName, namespace, "v1.14.1", numberOfControlPlaneNodes)
 
 	// wait for kubeconfig to show up
 	fmt.Println("Waiting up to 5 minutes for a the kubeconfig secret to appear")
@@ -42,7 +93,7 @@ func TestUpgradeScenario(t *testing.T) {
 	}
 
 	fmt.Println("Waiting for up to 5 minutes for etcd to be ready")
-	if err := waitForEtcdReady(clusterName, namespace); err != nil {
+	if err := waitForEtcdReady(clusterName, namespace, numberOfControlPlaneNodes); err != nil {
 		panic(fmt.Sprintf("%+v\n", err))
 	}
 
@@ -92,7 +143,43 @@ func waitForKubeconfigSecret(clusterName, namespace string) error {
 	}
 }
 
-func waitForEtcdReady(clusterName, namespace string) error {
+func waitForProviderIDOnMachines(clusterName, namespace string, expected int) error {
+	// get all machines
+	//k get machines -l cluster.k8s.io/cluster-name=my-cluster -o custom-columns=PROVIDERID:.spec.providerID --no-headers
+	timeout := time.NewTimer(10 * time.Minute)
+	ticker := time.NewTicker(5 * time.Second)
+	for {
+		select {
+		case <-timeout.C:
+			return errors.New("timed out waiting for provider IDs")
+		case <-ticker.C:
+			out, err := kubectl(nil, "kind", "get", "machines",
+				"--namespace", namespace,
+				"--selector", fmt.Sprintf("cluster.k8s.io/cluster-name=%s", clusterName),
+				"--output", "custom-columns=PROVIDERID:.spec.providerID",
+				"--no-headers")
+			if err != nil {
+				return errors.WithStack(err)
+			}
+
+			lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
+			idCount := 0
+			for _, l := range lines {
+				item := string(bytes.TrimSpace(l))
+				if item != "<none>" {
+					idCount++
+				}
+			}
+			if idCount >= expected {
+				return nil
+			}
+		}
+	}
+	// inspect provider iD
+	//cluster.k8s.io/cluster-name: my-cluster
+}
+
+func waitForEtcdReady(clusterName, namespace string, expected int) error {
 	secret, err := kubectl(nil, "kind", "get", "secret", secretName(clusterName), "-n", namespace, "-o", "jsonpath='{.data.kubeconfig}'")
 	if err != nil {
 		return err
@@ -125,28 +212,45 @@ func waitForEtcdReady(clusterName, namespace string) error {
 				"po",
 				"--namespace", "kube-system",
 				"--selector", "component=etcd",
-				"-o", "jsonpath='{.items..status.phase}'",
+				"--output", "custom-columns=PHASE:.status.phase",
+				"--no-headers",
 			)
-			lines, err := cmd.Output()
+			out, err := cmd.Output()
 			if err != nil {
 				return errors.WithStack(err)
 			}
-			for _, b := range bytes.Split(lines, []byte("\n")) {
-				if string(b) == "'Running'" {
-					return nil
+			lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
+			idCount := 0
+			for _, l := range lines {
+				item := string(bytes.TrimSpace(l))
+				if len(item) == 0 {
+					continue
 				}
+				if strings.Contains(item, "Running") {
+					idCount++
+				}
+			}
+			if idCount >= expected {
+				return nil
 			}
 		}
 	}
 }
 
-func createTestCluster(t *testing.T, clusterName, namespace, version string) {
+func createTestCluster(t *testing.T, clusterName, namespace, version string, numberOfControlPlanes int) {
 	t.Helper()
 	if err := setupClusterObject(clusterName, namespace); err != nil {
 		t.Fatal(handleErr(err))
 	}
-	if err := setupControlPlaneObject(clusterName, namespace, version); err != nil {
-		t.Fatal(handleErr(err))
+	for i := 0; i < numberOfControlPlanes; i++ {
+		if err := setupControlPlaneObject(clusterName, namespace, version, i); err != nil {
+			t.Fatal(handleErr(err))
+		}
+	}
+	// wait for provider ID on all control planes before creating workerss
+	fmt.Println("Waiting for up to 10 minutes for the provider IDs to appear on the machines")
+	if err := waitForProviderIDOnMachines(clusterName, namespace, numberOfControlPlanes); err != nil {
+		t.Fatal(err)
 	}
 	if err := setupWorkerObject(clusterName, namespace, version); err != nil {
 		t.Fatal(handleErr(err))
@@ -160,10 +264,11 @@ func setupClusterObject(clusterName, namespace string) error {
 	}
 	return pipeToKubectlApply(bytes.NewReader(out))
 }
-func setupControlPlaneObject(clusterName, namespace, version string) error {
+
+func setupControlPlaneObject(clusterName, namespace, version string, count int) error {
 	out, err := capdctl(
 		"control-plane",
-		"--name", controlPlaneName(clusterName),
+		"--name", controlPlaneName(clusterName, count),
 		"--namespace", namespace,
 		"--cluster-name", clusterName,
 		"--version", version)
@@ -172,6 +277,7 @@ func setupControlPlaneObject(clusterName, namespace, version string) error {
 	}
 	return pipeToKubectlApply(bytes.NewReader(out))
 }
+
 func setupWorkerObject(clusterName, namespace, version string) error {
 	out, err := capdctl("worker",
 		"--name", workerName(clusterName),
@@ -185,8 +291,11 @@ func setupWorkerObject(clusterName, namespace, version string) error {
 }
 
 // controlPlaneName generates the base control-plane node name for a given cluster
-func controlPlaneName(clusterName string) string {
-	return fmt.Sprintf("%s-control-plane", clusterName)
+func controlPlaneName(clusterName string, number int) string {
+	if number == 0 {
+		return fmt.Sprintf("%s-control-plane", clusterName)
+	}
+	return fmt.Sprintf("%s-control-plane%d", clusterName, number)
 }
 
 // workerName generates the base worker node name for a given cluster
