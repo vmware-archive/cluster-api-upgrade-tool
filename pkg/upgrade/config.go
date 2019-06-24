@@ -19,6 +19,7 @@ type Config struct {
 	TargetCluster     TargetClusterConfig     `json:"targetCluster"`
 	MachineUpdates    MachineUpdateConfig     `json:"machineUpdates"`
 	KubernetesVersion string                  `json:"kubernetesVersion"`
+	UpgradeID         string                  `json:"upgradeID"`
 }
 
 // ManagementClusterConfig is the Kubeconfig and relevant information to connect to the management cluster of the worker cluster being upgraded.
