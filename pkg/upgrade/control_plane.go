@@ -5,7 +5,9 @@ package upgrade
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -248,7 +250,7 @@ func (u *ControlPlaneUpgrader) etcdClusterHealthCheck(timeout time.Duration) err
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	_, _, err := u.etcdctl(ctx, "cluster-health")
+	_, _, err := u.etcdctl(ctx, "endpoint health --cluster")
 	return err
 }
 
@@ -469,30 +471,37 @@ func (u *ControlPlaneUpgrader) listMachines() (*clusterapiv1alpha1.MachineList, 
 	return machines, nil
 }
 
+type etcdMembersResponse struct {
+	Members []etcdMember `json:"members"`
+}
+
+type etcdMember struct {
+	ID   uint64 `json:"ID"`
+	Name string `json:"name"`
+}
+
 func (u *ControlPlaneUpgrader) oldNodeToEtcdMemberId(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	stdout, _, err := u.etcdctl(ctx, "member", "list")
+	stdout, _, err := u.etcdctl(ctx, "member list -w json")
 	if err != nil {
 		return err
 	}
 
-	lines := strings.Split(stdout, "\n")
-	nodeIPtoEtcdMemberMap := make(map[string]string)
-
-	for _, line := range lines {
-		if len(line) > 0 {
-			words := strings.Split(line, " ")
-
-			nodeName := strings.Split(words[1], "=")
-			node := nodeName[1]
-			etcdMemberId := words[0][:len(words[0])-1]
-			nodeIPtoEtcdMemberMap[node] = etcdMemberId
-		}
+	var resp etcdMembersResponse
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		return errors.Wrap(err, "unable to parse etcdctl member list json output")
 	}
 
-	u.oldNodeToEtcdMember = nodeIPtoEtcdMemberMap
+	m := make(map[string]string)
+	for _, member := range resp.Members {
+		// etcd expects member IDs in hex, so convert to base 16
+		id := strconv.FormatUint(member.ID, 16)
+		m[member.Name] = id
+	}
+
+	u.oldNodeToEtcdMember = m
 
 	return nil
 }
@@ -555,17 +564,26 @@ func (u *ControlPlaneUpgrader) etcdctl(ctx context.Context, args ...string) (str
 func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, args ...string) (string, string, error) {
 	endpoint := fmt.Sprintf("https://%s:2379", pod.Status.PodIP)
 
+	fullArgs := []string{
+		"ETCDCTL_API=3",
+		"etcdctl",
+		"--cacert", etcdCACertFile,
+		"--cert", etcdCertFile,
+		"--key", etcdKeyFile,
+		"--endpoints", endpoint,
+	}
+
+	fullArgs = append(fullArgs, args...)
+
 	opts := kubernetes.PodExecInput{
 		RestConfig:       u.targetRestConfig,
 		KubernetesClient: u.targetKubernetesClient,
 		Namespace:        pod.Namespace,
 		Name:             pod.Name,
 		Command: []string{
-			"etcdctl",
-			"--ca-file", etcdCACertFile,
-			"--cert-file", etcdCertFile,
-			"--key-file", etcdKeyFile,
-			"--endpoints", endpoint,
+			"sh",
+			"-c",
+			strings.Join(fullArgs, " "),
 		},
 	}
 
