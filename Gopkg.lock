@@ -77,6 +77,14 @@
   version = "v3.6.1"
 
 [[projects]]
+  digest = "1:ffe9824d294da03b391f44e1ae8281281b4afc1bdaa9588c9097785e3af10cec"
+  name = "github.com/davecgh/go-spew"
+  packages = ["spew"]
+  pruneopts = "UT"
+  revision = "8991bc29aa16c548c550c7ff78260e27b9ab7c73"
+  version = "v1.1.1"
+
+[[projects]]
   digest = "1:dd39e40faa3d7a12ce2b930efbe954a45e8f91a87e2adf5d8654ccb6137c4ab2"
   name = "github.com/dgrijalva/jwt-go"
   packages = ["."]
@@ -269,6 +277,14 @@
   version = "v0.8.1"
 
 [[projects]]
+  digest = "1:0028cb19b2e4c3112225cd871870f2d9cf49b9b4276531f03438a88e94be86fe"
+  name = "github.com/pmezard/go-difflib"
+  packages = ["difflib"]
+  pruneopts = "UT"
+  revision = "792786c7400a136282c1664665ae0a8db921c6c2"
+  version = "v1.0.0"
+
+[[projects]]
   digest = "1:fd61cf4ae1953d55df708acb6b91492d538f49c305b364a014049914495db426"
   name = "github.com/sirupsen/logrus"
   packages = ["."]
@@ -291,6 +307,17 @@
   pruneopts = "UT"
   revision = "298182f68c66c05229eb03ac171abe6e309ee79a"
   version = "v1.0.3"
+
+[[projects]]
+  digest = "1:5da8ce674952566deae4dbc23d07c85caafc6cfa815b0b3e03e41979cedb8750"
+  name = "github.com/stretchr/testify"
+  packages = [
+    "assert",
+    "require",
+  ]
+  pruneopts = "UT"
+  revision = "ffdc059bfe9ce6a4e144ba849dbedead332c6053"
+  version = "v1.3.0"
 
 [[projects]]
   branch = "master"
@@ -670,6 +697,8 @@
     "github.com/pkg/errors",
     "github.com/sirupsen/logrus",
     "github.com/spf13/cobra",
+    "github.com/stretchr/testify/assert",
+    "github.com/stretchr/testify/require",
     "k8s.io/api/core/v1",
     "k8s.io/api/rbac/v1",
     "k8s.io/apimachinery/pkg/api/errors",
@@ -681,7 +710,6 @@
     "k8s.io/apimachinery/pkg/util/wait",
     "k8s.io/client-go/kubernetes",
     "k8s.io/client-go/kubernetes/scheme",
-    "k8s.io/client-go/kubernetes/typed/core/v1",
     "k8s.io/client-go/plugin/pkg/client/auth",
     "k8s.io/client-go/rest",
     "k8s.io/client-go/tools/clientcmd",
