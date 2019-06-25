@@ -11,7 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/blang/semver"
+	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
@@ -19,8 +22,6 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/wait"
 	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
 )
 
@@ -213,42 +214,6 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) addMachine(source *clusterapiv1alpha1.Machine) (*clusterapiv1alpha1.Machine, error) {
-	newMachine := source.DeepCopy()
-
-	// have to clear this out so we can create a new machine
-	newMachine.ResourceVersion = ""
-
-	// have to clear this out so the new machine can get its own provider id set
-	newMachine.Spec.ProviderID = nil
-
-	// assume the original name is controlplane-<index> or controlplane-<index>-<timestamp>
-	// let's set the new name to controlplane-<index>-<timestamp>
-	nameParts := strings.Split(source.Name, "-")
-	if len(nameParts) < 2 {
-		return nil, errors.Errorf("machine name %q does not match expected format <name>-<index> or <name>-<index>-<timestamp>", source.Name)
-	}
-	newMachine.Name = fmt.Sprintf("%s-%s-%d", nameParts[0], nameParts[1], time.Now().Unix())
-
-	if u.imageField != "" && u.imageID != "" {
-		if err := updateMachineSpecImage(&newMachine.Spec, u.imageField, u.imageID); err != nil {
-			return nil, err
-		}
-	}
-
-	newMachine.Spec.Versions.ControlPlane = u.desiredVersion.String()
-	newMachine.Spec.Versions.Kubelet = u.desiredVersion.String()
-
-	u.log.Info("Creating new machine", "name", newMachine.GetName())
-
-	createdMachine, err := u.managementClusterAPIClient.Machines(u.clusterNamespace).Create(newMachine)
-	if err != nil {
-		return nil, errors.Wrapf(err, "Error creating machine: %s", newMachine.Name)
-	}
-
-	return createdMachine, nil
-}
-
 func (u *ControlPlaneUpgrader) etcdClusterHealthCheck(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -263,6 +228,22 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 	if err != nil {
 		return err
 	}
+
+	mo := MachineOptions{
+		ImageID:        u.imageID,
+		ImageField:     u.imageField,
+		DesiredVersion: u.desiredVersion,
+	}
+
+	machineCreator := NewMachineCreator(
+		// TODO(chuckha) This name looks super weird. This machine creator is the k8s machine creator.
+		WithMachineCreator(u.managementClusterAPIClient.Machines(u.clusterNamespace)),
+		WithMachineGetter(u.managementClusterAPIClient.Machines(u.clusterNamespace)),
+		WithNodeLister(u.targetKubernetesClient.CoreV1().Nodes()),
+		WithPodGetter(u.targetKubernetesClient.CoreV1().Pods("kube-system")),
+		WithMachineOptions(mo),
+		WithLogger(u.log.WithName("machine-creator")),
+	)
 
 	// TODO add more error logs on failure conditions
 	for _, machine := range machines.Items {
@@ -285,43 +266,15 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 		oldNode := u.GetNodeFromProviderID(originalProviderID)
 		oldHostName := hostnameForNode(oldNode)
 
-		// 1. create new machine
-		createdMachine, err := u.addMachine(&machine)
+		newMachine, node, err := machineCreator.NewMachine(&machine)
 		if err != nil {
 			return err
 		}
+		nodeHostname := hostnameForNode(node)
 
-		// 2. wait for it to have a provider id
-		newProviderID, err := u.waitForMachineProviderID(createdMachine.Namespace, createdMachine.Name, 15*time.Minute)
-		if err != nil {
+		// This used to happen when a new machine was created as a side effect. Must still update the mapping.
+		if err := u.UpdateProviderIDsToNodes(); err != nil {
 			return err
-		}
-		p, err := kubernetes.ParseProviderID(newProviderID)
-		if err != nil {
-			u.log.Error(err, "error parsing new provider id", "provider-id", newProviderID)
-		} else {
-			newProviderID = p
-		}
-
-		// 3. wait for the new node to show up with the matching provider id
-		newNode, err := u.waitForNodeWithProviderID(newProviderID, 5*time.Minute)
-		if err != nil {
-			u.log.Error(err, "Failed to find a new node with provider id", "provider-id", newProviderID)
-			return err
-		}
-
-		// 4. Wait for node to be ready
-		nodeHostname := hostnameForNode(newNode)
-		if nodeHostname == "" {
-			u.log.Info("unable to find hostname for node", "node", newNode.Name)
-			return errors.Errorf("unable to find hostname for node %s", newNode.Name)
-		}
-		err = wait.PollImmediate(15*time.Second, 15*time.Minute, func() (bool, error) {
-			ready := u.componentHealthCheck(nodeHostname)
-			return ready, nil
-		})
-		if err != nil {
-			return errors.Wrapf(err, "components on node %s are not ready", newNode.Name)
 		}
 
 		// delete old etcd member
@@ -334,7 +287,7 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 			return err
 		}
 
-		if err := u.applyAnnotation(&machine); err != nil {
+		if err := u.applyAnnotation(newMachine); err != nil {
 			return err
 		}
 	}
@@ -342,10 +295,26 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 }
 
 func (u *ControlPlaneUpgrader) applyAnnotation(m *clusterapiv1alpha1.Machine) error {
+	original, err := json.Marshal(m)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	if m.Annotations == nil {
+		m.Annotations = map[string]string{}
+	}
 	m.Annotations[UpgradeIDAnnotationKey] = u.upgradeID
-	// TODO(chuckha): use Patch instead of Update
-	_, err := u.managementClusterAPIClient.Machines(u.clusterNamespace).Update(m)
-	return errors.WithStack(err)
+	updated, err := json.Marshal(m)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	patch, err := jsonpatch.CreateMergePatch(original, updated)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	if _, err := u.managementClusterAPIClient.Machines(m.Namespace).Patch(m.Name, types.MergePatchType, patch); err != nil {
+		return errors.WithStack(err)
+	}
+	return nil
 }
 
 // retry the given function for the given number of times with the given interval
@@ -360,58 +329,6 @@ func (u *ControlPlaneUpgrader) retry(node *v1.Node, count int, interval time.Dur
 	}
 
 	return nil
-}
-
-func (u *ControlPlaneUpgrader) waitForNodeWithProviderID(providerID string, timeout time.Duration) (*v1.Node, error) {
-	u.log.Info("Waiting for node", "provider-id", providerID)
-	var node *v1.Node
-
-	err := wait.PollImmediate(5*time.Second, timeout, func() (bool, error) {
-		if err := u.UpdateProviderIDsToNodes(); err != nil {
-			return false, err
-		}
-
-		n := u.GetNodeFromProviderID(providerID)
-		if n != nil {
-			node = n
-			return true, nil
-		}
-
-		return false, nil
-	})
-
-	if err != nil {
-		return nil, errors.Wrap(err, "timed out waiting for node provider id")
-	}
-
-	u.log.Info("Found node", "name", node.Name)
-	return node, nil
-}
-
-func (u *ControlPlaneUpgrader) waitForMachineProviderID(machineNamespace, machineName string, timeout time.Duration) (string, error) {
-	u.log.Info("waitForMachineProviderID start", "namespace", machineNamespace, "name", machineName)
-	var providerID string
-
-	err := wait.PollImmediate(5*time.Second, timeout, func() (bool, error) {
-		machine, err := u.managementClusterAPIClient.Machines(machineNamespace).Get(machineName, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-
-		if machine.Spec.ProviderID == nil {
-			return false, nil
-		}
-
-		providerID = *machine.Spec.ProviderID
-		return providerID != "", nil
-	})
-
-	if err != nil {
-		return "", errors.Wrap(err, "timed out waiting for machine provider id")
-	}
-
-	u.log.Info("Got providerID", "provider-id", providerID)
-	return providerID, nil
 }
 
 func (u *ControlPlaneUpgrader) deleteMachine(machine *clusterapiv1alpha1.Machine) error {
@@ -433,46 +350,6 @@ func hostnameForNode(node *v1.Node) string {
 		}
 	}
 	return ""
-}
-
-// componentHealthCheck checks that the etcd, apiserver, scheduler, and controller manager static pods are healthy.
-func (u *ControlPlaneUpgrader) componentHealthCheck(nodeHostname string) bool {
-	u.log.Info("Component health check for node", "hostname", nodeHostname)
-
-	components := []string{"etcd", "kube-apiserver", "kube-scheduler", "kube-controller-manager"}
-	requiredConditions := sets.NewString("PodScheduled", "Initialized", "Ready", "ContainersReady")
-
-	for _, component := range components {
-		foundConditions := sets.NewString()
-
-		podName := fmt.Sprintf("%s-%v", component, nodeHostname)
-		log := u.log.WithValues("pod", podName)
-
-		log.Info("Getting pod")
-		pod, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").Get(podName, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			log.Info("Pod not found yet")
-			return false
-		} else if err != nil {
-			log.Error(err, "error getting pod")
-			return false
-		}
-
-		for _, condition := range pod.Status.Conditions {
-			if condition.Status == "True" {
-				foundConditions.Insert(string(condition.Type))
-			}
-		}
-
-		missingConditions := requiredConditions.Difference(foundConditions)
-		if missingConditions.Len() > 0 {
-			missingDescription := strings.Join(missingConditions.List(), ",")
-			log.Info("pod is missing some required conditions", "conditions", missingDescription)
-			return false
-		}
-	}
-
-	return true
 }
 
 // Split this into getting machines
