@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	clusterapiv1alpha1client "sigs.k8s.io/cluster-api/pkg/client/clientset_generated/clientset/typed/cluster/v1alpha1"
+	"sigs.k8s.io/cluster-api/pkg/controller/noderefutil"
 )
 
 type base struct {
@@ -132,12 +133,16 @@ func (u *base) UpdateProviderIDsToNodes() error {
 	pairs := make(map[string]*v1.Node)
 	for i := range nodes.Items {
 		node := nodes.Items[i]
-		providerID, err := kubernetes2.ParseProviderID(node.Spec.ProviderID)
-		if err != nil {
+		id := ""
+		providerID, err := noderefutil.NewProviderID(node.Spec.ProviderID)
+		if err == nil {
+			id = providerID.ID()
+		} else {
+			u.log.Error(err, "failed to parse provider id", "id", node.Spec.ProviderID)
 			// unable to parse provider ID with whitelist of provider ID formats. Use original provider ID
-			providerID = node.Spec.ProviderID
+			id = node.Spec.ProviderID
 		}
-		pairs[providerID] = &node
+		pairs[id] = &node
 	}
 
 	u.providerIDsToNodes = pairs

@@ -11,13 +11,13 @@ import (
 	"github.com/blang/semver"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
-	"github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
+	"sigs.k8s.io/cluster-api/pkg/controller/noderefutil"
 )
 
 type podGetter interface {
@@ -166,10 +166,10 @@ func (n *MachineCreator) waitForProviderID(ns, name string, timeout time.Duratio
 	return providerID, nil
 }
 
-func (n *MachineCreator) waitForMatchingNode(providerID string, timeout time.Duration) (*v1.Node, error) {
-	n.log.Info("Waiting for node", "provider-id", providerID)
+func (n *MachineCreator) waitForMatchingNode(rawProviderID string, timeout time.Duration) (*v1.Node, error) {
+	n.log.Info("Waiting for node", "provider-id", rawProviderID)
 	var matchingNode v1.Node
-	machineID, err := kubernetes.ParseProviderID(providerID)
+	providerID, err := noderefutil.NewProviderID(rawProviderID)
 	if err != nil {
 		return nil, err
 	}
@@ -181,11 +181,11 @@ func (n *MachineCreator) waitForMatchingNode(providerID string, timeout time.Dur
 		}
 		for _, node := range nodes.Items {
 			// TODO(chuckha) Update to use noderefutil.Equals when we use a more recent cluster-api
-			nodeID, err := kubernetes.ParseProviderID(node.Spec.ProviderID)
+			nodeID, err := noderefutil.NewProviderID(node.Spec.ProviderID)
 			if err != nil {
-				return false, nil
+				return false, err
 			}
-			if nodeID == machineID {
+			if providerID.Equals(nodeID) {
 				n.log.Info("Found node", "name", node.Name)
 				matchingNode = node
 				return true, nil
