@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/blang/semver"
@@ -88,6 +90,10 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	}
 
 	if err := u.UpdateProviderIDsToNodes(); err != nil {
+		return err
+	}
+
+	if err := u.updateAndUploadKubeadmKubernetesVersion(); err != nil {
 		return err
 	}
 
@@ -517,4 +523,42 @@ func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, a
 	u.log.Info(fmt.Sprintf("etcdctl stderr: %s", stderr))
 
 	return stdout, stderr, err
+}
+
+func (u *ControlPlaneUpgrader) updateAndUploadKubeadmKubernetesVersion() error {
+	original, err := u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Get("kubeadm-config", metav1.GetOptions{})
+	if err != nil {
+		return errors.Wrap(err, "error getting kubeadm configmap from target cluster")
+	}
+
+	updated, err := updateKubeadmKubernetesVersion(original, "v"+u.desiredVersion.String())
+	if err != nil {
+		return err
+	}
+
+	if _, err = u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Update(updated); err != nil {
+		return errors.Wrap(err, "error updating kubeadm configmap")
+	}
+
+	return nil
+}
+
+func updateKubeadmKubernetesVersion(original *v1.ConfigMap, version string) (*v1.ConfigMap, error) {
+	cm := original.DeepCopy()
+
+	clusterConfig := make(map[string]interface{})
+	if err := yaml.Unmarshal([]byte(cm.Data["ClusterConfiguration"]), &clusterConfig); err != nil {
+		return nil, errors.Wrap(err, "error decoding kubeadm configmap ClusterConfiguration")
+	}
+
+	clusterConfig["kubernetesVersion"] = version
+
+	updated, err := yaml.Marshal(clusterConfig)
+	if err != nil {
+		return nil, errors.Wrap(err, "error encoding kubeadm configmap ClusterConfiguration")
+	}
+
+	cm.Data["ClusterConfiguration"] = string(updated)
+
+	return cm, nil
 }

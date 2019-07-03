@@ -111,7 +111,5 @@ func upgradeCluster(config upgrade.Config) error {
 		return err
 	}
 
-	infoMessage := fmt.Sprintf("Rerun with `--upgrade-id=%s` if this upgrade fails midway and you want to retry", config.UpgradeID)
-	log.Info(infoMessage)
 	return upgrader.Upgrade()
 }
