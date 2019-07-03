@@ -19,7 +19,7 @@ import (
 )
 
 // kubeconfigSecretKey is the key where the kubeconfig is stored in the secret.
-const kubeconfigSecretKey = "kubeconfig"
+const kubeconfigSecretKey = "value"
 
 // keyPair contains a cert and key.
 type keyPair struct {
