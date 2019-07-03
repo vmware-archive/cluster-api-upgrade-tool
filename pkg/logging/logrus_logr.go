@@ -62,7 +62,7 @@ func (l *logrusAdapter) WithValues(keysAndValues ...interface{}) logr.Logger {
 const nameKey = "logger"
 
 func (l *logrusAdapter) WithName(name string) logr.Logger {
-	if existing := l.l.Data[nameKey]; existing != "" {
+	if existing := l.l.Data[nameKey]; existing != nil && existing != "" {
 		return l.WithValues(nameKey, fmt.Sprintf("%s.%s", existing, name))
 	}
 
