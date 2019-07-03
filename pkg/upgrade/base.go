@@ -97,6 +97,9 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 		config.UpgradeID = fmt.Sprintf("%d", time.Now().Unix())
 	}
 
+	infoMessage := fmt.Sprintf("Rerun with `--upgrade-id=%s` if this upgrade fails midway and you want to retry", config.UpgradeID)
+	log.Info(infoMessage)
+
 	return &base{
 		log:                        log,
 		userVersion:                userVersion,
