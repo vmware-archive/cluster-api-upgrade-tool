@@ -215,10 +215,24 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 }
 
 func (u *ControlPlaneUpgrader) etcdClusterHealthCheck(timeout time.Duration) error {
+	members, err := u.listEtcdMembers(timeout)
+	if err != nil {
+		return err
+	}
+
+	var endpoints []string
+	for _, member := range members {
+		endpoints = append(endpoints, member.ClientURLs...)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	_, _, err := u.etcdctl(ctx, "endpoint health --cluster")
+	// TODO: we can switch back to using --cluster instead of --endpoints when we no longer need to support etcd 3.2
+	// (which is the version kubeadm installs for Kubernetes v1.13.x). kubeadm switched to etcd 3.3 with v1.14.x.
+
+	// TODO: use '-w json' when it's in the minimum supported etcd version.
+	_, _, err = u.etcdctl(ctx, "endpoint health --endpoints", strings.Join(endpoints, ","))
 	return err
 }
 
@@ -373,26 +387,36 @@ type etcdMembersResponse struct {
 }
 
 type etcdMember struct {
-	ID   uint64 `json:"ID"`
-	Name string `json:"name"`
+	ID         uint64   `json:"ID"`
+	Name       string   `json:"name"`
+	ClientURLs []string `json:"clientURLs"`
 }
 
-func (u *ControlPlaneUpgrader) oldNodeToEtcdMemberId(timeout time.Duration) error {
+func (u *ControlPlaneUpgrader) listEtcdMembers(timeout time.Duration) ([]etcdMember, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	stdout, _, err := u.etcdctl(ctx, "member list -w json")
 	if err != nil {
-		return err
+		return []etcdMember{}, err
 	}
 
 	var resp etcdMembersResponse
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
-		return errors.Wrap(err, "unable to parse etcdctl member list json output")
+		return []etcdMember{}, errors.Wrap(err, "unable to parse etcdctl member list json output")
+	}
+
+	return resp.Members, nil
+}
+
+func (u *ControlPlaneUpgrader) oldNodeToEtcdMemberId(timeout time.Duration) error {
+	members, err := u.listEtcdMembers(timeout)
+	if err != nil {
+		return err
 	}
 
 	m := make(map[string]string)
-	for _, member := range resp.Members {
+	for _, member := range members {
 		// etcd expects member IDs in hex, so convert to base 16
 		id := strconv.FormatUint(member.ID, 16)
 		m[member.Name] = id
