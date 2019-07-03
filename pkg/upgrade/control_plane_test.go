@@ -40,8 +40,8 @@ func TestEtcdMemberHealthStructDecoding(t *testing.T) {
 
 	expected := etcdMembersResponse{
 		Members: []etcdMember{
-			{Name: "two", ID: 5782640540428238474},
-			{Name: "default", ID: 10276657743932975437},
+			{Name: "two", ID: 5782640540428238474, ClientURLs: []string{"http://localhost:3379"}},
+			{Name: "default", ID: 10276657743932975437, ClientURLs: []string{"http://localhost:2379"}},
 		},
 	}
 
