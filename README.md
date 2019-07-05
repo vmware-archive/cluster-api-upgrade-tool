@@ -19,14 +19,16 @@ supports full lifecycle management of both control planes and worker nodes, we p
 Build: Run "go build" from the home directory of this project.
 
 Run the generated binary against an existing cluster.
+
 Example:
 
 ````
 ./cluster-api-upgrade-tool --kubeconfig <Path to your management cluster kubeconfig file> \
-  --ca-field spec.providerSpec.value.caKeyPair \
-  --cluster-namespace <target cluster namespace> \
+  --cluster-namespace <Target cluster namespace> \
   --cluster-name <Name of your target cluster> \
-  --kubernetes-version <Desired kubernetes version>
+  --kubeconfig-secret <Name of kubeconfig secret> \
+  --kubernetes-version <Desired kubernetes version> \
+  --scope control-plane
 ````
 
 ### Prerequisites
