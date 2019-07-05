@@ -60,6 +60,10 @@ func (u *MachineDeploymentUpgrader) listMachineDeployments() (*clusterapiv1alpha
 
 func (u *MachineDeploymentUpgrader) upgradeMachineDeployments(list *clusterapiv1alpha1.MachineDeploymentList) error {
 	for _, machineDeployment := range list.Items {
+		// Skip any machineDeployments that already have this upgrade annotation id
+		if val, ok := machineDeployment.Spec.Template.Annotations[UpgradeIDAnnotationKey]; ok && val == u.upgradeID {
+			continue
+		}
 		if err := u.updateMachineDeployment(&machineDeployment); err != nil {
 			u.log.Error(err, "Failed to create new MachineDeployment", "namespace", machineDeployment.Namespace, "name", machineDeployment.Name)
 			return err
@@ -79,6 +83,8 @@ func (u *MachineDeploymentUpgrader) updateMachineDeployment(machineDeployment *c
 
 	// Make the modification(s)
 	machineDeployment.Spec.Template.Spec.Versions.Kubelet = u.desiredVersion.String()
+	// Add the upgrade ID to this template so all machines get it
+	machineDeployment.Spec.Template.Annotations[UpgradeIDAnnotationKey] = u.upgradeID
 
 	if u.imageField != "" && u.imageID != "" {
 		if err := updateMachineSpecImage(&machineDeployment.Spec.Template.Spec, u.imageField, u.imageID); err != nil {
