@@ -8,7 +8,12 @@
 
 [[constraint]]
   name = "sigs.k8s.io/cluster-api"
-  version = "0.1.0"
+  version = "0.1.4"
+
+# Remove once a86bc2 is in a tagged version
+[[override]]
+  name = "sigs.k8s.io/cluster-api"
+  revision = "a86bc2388e73dc32c8e17e8a16c1eac216b2de30"
 
 [[constraint]]
   name = "sigs.k8s.io/cluster-api-provider-aws"
@@ -42,3 +47,4 @@
 [[override]]
   name = "golang.org/x/oauth2"
   revision = "a6bd8cefa1811bd24b86f8902872e4e8225f74c4"
+

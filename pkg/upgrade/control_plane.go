@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
+	"sigs.k8s.io/cluster-api/pkg/controller/noderefutil"
 )
 
 const (
@@ -278,12 +279,17 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 			continue
 		}
 
-		originalProviderID, err := kubernetes.ParseProviderID(*machine.Spec.ProviderID)
+		originalProviderID, err := noderefutil.NewProviderID(*machine.Spec.ProviderID)
 		if err != nil {
 			return err
 		}
 
-		oldNode := u.GetNodeFromProviderID(originalProviderID)
+		oldNode := u.GetNodeFromProviderID(originalProviderID.ID())
+		if oldNode == nil {
+			u.log.Info("Couldn't retrieve oldNode", "id", originalProviderID.String())
+			return fmt.Errorf("unknown previous node %q", originalProviderID.String())
+		}
+
 		oldHostName := hostnameForNode(oldNode)
 
 		newMachine, node, err := machineCreator.NewMachine(&machine)
