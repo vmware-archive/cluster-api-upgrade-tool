@@ -84,6 +84,9 @@ func (u *MachineDeploymentUpgrader) updateMachineDeployment(machineDeployment *c
 	// Make the modification(s)
 	machineDeployment.Spec.Template.Spec.Versions.Kubelet = u.desiredVersion.String()
 	// Add the upgrade ID to this template so all machines get it
+	if machineDeployment.Spec.Template.Annotations == nil {
+		machineDeployment.Spec.Template.Annotations = map[string]string{}
+	}
 	machineDeployment.Spec.Template.Annotations[UpgradeIDAnnotationKey] = u.upgradeID
 
 	if u.imageField != "" && u.imageID != "" {
