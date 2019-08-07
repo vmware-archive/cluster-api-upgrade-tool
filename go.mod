@@ -19,7 +19,7 @@ require (
 	k8s.io/client-go v10.0.0+incompatible
 	k8s.io/cluster-bootstrap v0.0.0-20190704110328-86aca54c9e62 // indirect
 	k8s.io/kubernetes v1.13.8 // indirect
-	sigs.k8s.io/cluster-api v0.1.6
-	sigs.k8s.io/cluster-api-provider-aws v0.3.4
+	sigs.k8s.io/cluster-api v0.1.9
+	sigs.k8s.io/cluster-api-provider-aws v0.3.7
 	sigs.k8s.io/yaml v1.1.0
 )
