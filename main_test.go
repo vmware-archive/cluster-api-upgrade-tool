@@ -22,17 +22,16 @@ import (
 // If you want to run just one at a time here are the commands:
 
 // To test multiple control plane upgrades
-// go test -count=1 -v -run -timeout=20m TestMultipleControlPlaneUpgradeScenario .
+// make test TESTCASE=TestMultipleControlPlaneUpgradeScenario
 
 // To test a single control plane upgrade
-// go test -count=1 -v -run TestUpgradeScenario .
+// make test TESTCASE=TestUpgradeScenario
 
 // To test machine deployment upgrade
-// go test -count=1 -v -run TestMachineDeployment .
+// make test TESTCASE=TestMachineDeployment
 
 // Code improvements:
 // TODO: replace fmt.Println with t.Log
-// TODO: Look into wait.PollImmediate instead of this home-grown solution, dep might not be worth it though, depends on how much code it is
 // TODO: Figure out a better naming strategy than hardcoding. I expected this to change when this test solidifies and then more tests are added
 // TODO: CLEANUP CODE, probably use a defer. Not sure what kind of cleanup to do. Do we want to try to reuse the management cluster?
 //       should each test get its own unique cluster and then have a single global teardown of the management cluster?
@@ -48,6 +47,18 @@ const (
 	managementClusterName = "management"
 	secretKubeconfigKey   = "value"
 )
+
+var (
+	capdctlBinary = "hack/tools/bin/capdctl"
+)
+
+func init() {
+	// Allow overriding the capdctl binary
+	binary := os.Getenv("CAPDCTL")
+	if binary != "" {
+		capdctlBinary = binary
+	}
+}
 
 func TestMultipleControlPlaneUpgradeScenario(t *testing.T) {
 	// normal set up
@@ -422,7 +433,7 @@ func pipeToKubectlApply(reader io.Reader) error {
 }
 
 func capdctl(args ...string) ([]byte, error) {
-	cmd := exec.Command("capdctl", args...)
+	cmd := exec.Command(capdctlBinary, args...)
 	return cmd.Output()
 }
 
