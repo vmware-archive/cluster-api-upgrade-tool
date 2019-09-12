@@ -1,5 +1,6 @@
 package main
 
+/*
 import (
 	"bytes"
 	"encoding/base64"
@@ -461,3 +462,4 @@ func kubeconfigPath(clusterName string) string {
 	home := os.Getenv("HOME")
 	return fmt.Sprintf("%s/.kube/kind-config-%s", home, clusterName)
 }
+*/

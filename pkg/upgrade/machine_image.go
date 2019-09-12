@@ -9,11 +9,11 @@ import (
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
+	clusterapiv1alpha2 "sigs.k8s.io/cluster-api/api/v1alpha2"
 )
 
 // updateMachineSpecImage replaces the value in spec specified by field with id.
-func updateMachineSpecImage(spec *clusterapiv1alpha1.MachineSpec, field, id string) error {
+func updateMachineSpecImage(spec *clusterapiv1alpha2.MachineSpec, field, id string) error {
 	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(spec)
 	if err != nil {
 		return errors.Wrap(err, "error converting machine spec to unstructured")
@@ -24,7 +24,7 @@ func updateMachineSpecImage(spec *clusterapiv1alpha1.MachineSpec, field, id stri
 		return errors.Wrapf(err, "error setting machine spec field %q to %q", field, id)
 	}
 
-	s := clusterapiv1alpha1.MachineSpec{}
+	s := clusterapiv1alpha2.MachineSpec{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u, &s); err != nil {
 		return errors.Wrap(err, "error converting unstructured to machine spec")
 	}

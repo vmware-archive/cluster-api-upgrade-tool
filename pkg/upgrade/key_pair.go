@@ -14,8 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"sigs.k8s.io/cluster-api-provider-aws/pkg/cloud/aws/services/certificates"
-	clusterv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
+	clusterapiv1alpha2 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	"sigs.k8s.io/cluster-api/util/certs"
+	"sigs.k8s.io/cluster-api/util/kubeconfig"
 )
 
 // kubeconfigSecretKey is the key where the kubeconfig is stored in the secret.
@@ -51,7 +52,7 @@ func NewRestConfigFromKubeconfigSecretRef(secrets secrets, name string) (*rest.C
 // NewRestConfigFromCAClusterField returns a rest.Config configured with the CA key pair found in the cluster's
 // object in the fieldpath specified. For example, "spec.providerSpec.value.caKeyPair" traverses the cluster
 // object going through each '.' delimited field.
-func NewRestConfigFromCAClusterField(cluster *clusterv1alpha1.Cluster, fieldPath, apiEndpoint string) (*rest.Config, error) {
+func NewRestConfigFromCAClusterField(cluster *clusterapiv1alpha2.Cluster, fieldPath, apiEndpoint string) (*rest.Config, error) {
 	pathParts := strings.Split(fieldPath, ".")
 	certPath := append(pathParts, "cert")
 	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cluster)
@@ -123,21 +124,21 @@ func NewRestConfigFromCASecretRef(secretClient secrets, name, clusterName, apiEn
 
 func restConfigFromKeyPair(clusterName, url string, keyPair *keyPair) (*rest.Config, error) {
 	// Borrowed from CAPA
-	cert, err := certificates.DecodeCertPEM(keyPair.Cert)
+	cert, err := certs.DecodeCertPEM(keyPair.Cert)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to decode CA Cert")
 	} else if cert == nil {
 		return nil, errors.New("certificate not found in config")
 	}
 
-	key, err := certificates.DecodePrivateKeyPEM(keyPair.Key)
+	key, err := certs.DecodePrivateKeyPEM(keyPair.Key)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to decode private key")
 	} else if key == nil {
 		return nil, errors.New("key not found in status")
 	}
 
-	cfg, err := certificates.NewKubeconfig(clusterName, url, cert, key)
+	cfg, err := kubeconfig.New(clusterName, url, cert, key)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to generate a kubeconfig")
 	}

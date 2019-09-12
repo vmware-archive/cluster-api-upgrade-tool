@@ -13,10 +13,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	"k8s.io/apimachinery/pkg/types"
-
 	"github.com/blang/semver"
-	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
@@ -24,14 +21,17 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
-	"sigs.k8s.io/cluster-api/pkg/controller/noderefutil"
+	clusterapiv1alpha2 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	"sigs.k8s.io/cluster-api/controllers/external"
+	"sigs.k8s.io/cluster-api/controllers/noderefutil"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
 	etcdCACertFile = "/etc/kubernetes/pki/etcd/ca.crt"
 	etcdCertFile   = "/etc/kubernetes/pki/etcd/peer.crt"
 	etcdKeyFile    = "/etc/kubernetes/pki/etcd/peer.key"
+	KindAWSMachine = "AWSMachine"
 
 	// UpgradeIDAnnotationKey is the annotation key for this tool's upgrade-id
 	UpgradeIDAnnotationKey = "upgrade-id"
@@ -75,44 +75,50 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	}
 
 	if isMinorVersionUpgrade(min, u.desiredVersion) {
+		u.log.Info("TEST: update configmap if needed")
 		err = u.updateKubeletConfigMapIfNeeded(u.desiredVersion)
 		if err != nil {
 			return err
 		}
 
+		u.log.Info("TEST: update rbac if needed")
 		err = u.updateKubeletRbacIfNeeded(u.desiredVersion)
 		if err != nil {
 			return err
 		}
 	}
 
+	u.log.Info("TEST: etcd cluster health check")
 	if err := u.etcdClusterHealthCheck(time.Minute * 1); err != nil {
 		return err
 	}
 
+	u.log.Info("TEST: update provider ids to nodes")
 	if err := u.UpdateProviderIDsToNodes(); err != nil {
 		return err
 	}
 
+	u.log.Info("TEST: update kubeadm version")
 	if err := u.updateAndUploadKubeadmKubernetesVersion(); err != nil {
 		return err
 	}
 
-	return u.updateMachines(machines)
+	u.log.Info("TEST: update CRDs")
+	return u.updateCRDs(machines)
 }
 
 func isMinorVersionUpgrade(base, update semver.Version) bool {
 	return base.Major == update.Major && base.Minor < update.Minor
 }
 
-func (u *ControlPlaneUpgrader) minMaxControlPlaneVersions(machines *clusterapiv1alpha1.MachineList) (semver.Version, semver.Version, error) {
+func (u *ControlPlaneUpgrader) minMaxControlPlaneVersions(machines *clusterapiv1alpha2.MachineList) (semver.Version, semver.Version, error) {
 	var min, max semver.Version
 
 	for _, machine := range machines.Items {
-		if machine.Spec.Versions.ControlPlane != "" {
-			machineVersion, err := semver.ParseTolerant(machine.Spec.Versions.ControlPlane)
+		if *machine.Spec.Version != "" {
+			machineVersion, err := semver.ParseTolerant(*machine.Spec.Version)
 			if err != nil {
-				return min, max, errors.Wrapf(err, "invalid control plane version %q for machine %s/%s", machine.Spec.Versions.ControlPlane, machine.Namespace, machine.Name)
+				return min, max, errors.Wrapf(err, "invalid control plane version %q for machine %s/%s", *machine.Spec.Version, machine.Namespace, machine.Name)
 			}
 			if min.EQ(unsetVersion) || machineVersion.LT(min) {
 				min = machineVersion
@@ -243,7 +249,66 @@ func (u *ControlPlaneUpgrader) etcdClusterHealthCheck(timeout time.Duration) err
 	return err
 }
 
-func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.MachineList) error {
+func (u *ControlPlaneUpgrader) updateObjectReference(name string, ref *v1.ObjectReference) (*v1.ObjectReference, error) {
+	if ref.Namespace == "" {
+		ref.Namespace = "default"
+	}
+	object, err := external.Get(u.ctrlClient, ref, ref.Namespace)
+	if err != nil {
+		return &v1.ObjectReference{}, err
+	}
+
+	object.SetResourceVersion("")
+	object.SetName(name)
+
+	ref.ResourceVersion = ""
+	ref.Name = name
+
+	return ref, u.ctrlClient.Create(context.TODO(), object)
+}
+
+func (u *ControlPlaneUpgrader) updateMachine(name string, machine clusterapiv1alpha2.Machine, machineCreator *MachineCreator) error {
+	originalProviderID, err := noderefutil.NewProviderID(*machine.Spec.ProviderID)
+	if err != nil {
+		return err
+	}
+
+	oldNode := u.GetNodeFromProviderID(originalProviderID.ID())
+	if oldNode == nil {
+		u.log.Info("Couldn't retrieve oldNode", "id", originalProviderID.String())
+		return fmt.Errorf("unknown previous node %q", originalProviderID.String())
+	}
+
+	oldHostName := hostnameForNode(oldNode)
+
+	newMachine, node, err := machineCreator.NewMachine(name, &machine)
+	if err != nil {
+		return err
+	}
+	nodeHostname := hostnameForNode(node)
+
+	// This used to happen when a new machine was created as a side effect. Must still update the mapping.
+	if err := u.UpdateProviderIDsToNodes(); err != nil {
+		return err
+	}
+
+	// delete old etcd member
+	err = u.deleteEtcdMember(time.Minute*1, nodeHostname, u.oldNodeToEtcdMember[oldHostName])
+	if err != nil {
+		return errors.Wrapf(err, "unable to delete old etcd member %s", u.oldNodeToEtcdMember[oldHostName])
+	}
+
+	if err := u.deleteMachine(&machine); err != nil {
+		return err
+	}
+
+	if err := u.applyAnnotation(newMachine); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) updateCRDs(machines *clusterapiv1alpha2.MachineList) error {
 	// save all etcd member id corresponding to node before upgrade starts
 	err := u.oldNodeToEtcdMemberId(time.Minute * 1)
 	if err != nil {
@@ -257,9 +322,9 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 	}
 
 	machineCreator := NewMachineCreator(
-		// TODO(chuckha) This name looks super weird. This machine creator is the k8s machine creator.
-		WithMachineCreator(u.managementClusterAPIClient.Machines(u.clusterNamespace)),
-		WithMachineGetter(u.managementClusterAPIClient.Machines(u.clusterNamespace)),
+		WithControllerRuntimeClient(u.ctrlClient),
+		WithMachineGetter(u.machineGetter),
+		WithNamespace(u.clusterNamespace),
 		WithNodeLister(u.targetKubernetesClient.CoreV1().Nodes()),
 		WithPodGetter(u.targetKubernetesClient.CoreV1().Pods("kube-system")),
 		WithMachineOptions(mo),
@@ -279,67 +344,49 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 			continue
 		}
 
-		originalProviderID, err := noderefutil.NewProviderID(*machine.Spec.ProviderID)
+		// assume the original name is controlplane-<index> or controlplane-<index>-<timestamp>
+		// let's set the new name to controlplane-<index>-<timestamp>
+		nameParts := strings.Split(machine.Name, "-")
+		if len(nameParts) < 2 {
+			return errors.Errorf("machine name %q does not match expected format <name>-<index> or <name>-<index>-<timestamp>", machine.Name)
+		}
+		name := fmt.Sprintf("%s-%s-%d", nameParts[0], nameParts[1], time.Now().Unix())
+		// TODO: generate the name based off each respective object
+
+		u.log.Info("TEST: update infra ref")
+		infraMachine, err := u.updateObjectReference(name, &machine.Spec.InfrastructureRef)
 		if err != nil {
 			return err
 		}
+		machine.Spec.InfrastructureRef = *infraMachine
 
-		oldNode := u.GetNodeFromProviderID(originalProviderID.ID())
-		if oldNode == nil {
-			u.log.Info("Couldn't retrieve oldNode", "id", originalProviderID.String())
-			return fmt.Errorf("unknown previous node %q", originalProviderID.String())
-		}
-
-		oldHostName := hostnameForNode(oldNode)
-
-		newMachine, node, err := machineCreator.NewMachine(&machine)
+		u.log.Info("TEST: update bootstrap ref")
+		bootstrap, err := u.updateObjectReference(name, machine.Spec.Bootstrap.ConfigRef)
 		if err != nil {
 			return err
 		}
-		nodeHostname := hostnameForNode(node)
+		machine.Spec.Bootstrap.ConfigRef = bootstrap
 
-		// This used to happen when a new machine was created as a side effect. Must still update the mapping.
-		if err := u.UpdateProviderIDsToNodes(); err != nil {
-			return err
-		}
-
-		// delete old etcd member
-		err = u.deleteEtcdMember(time.Minute*1, nodeHostname, u.oldNodeToEtcdMember[oldHostName])
-		if err != nil {
-			return errors.Wrapf(err, "unable to delete old etcd member %s", u.oldNodeToEtcdMember[oldHostName])
-		}
-
-		if err := u.deleteMachine(&machine); err != nil {
-			return err
-		}
-
-		if err := u.applyAnnotation(newMachine); err != nil {
+		u.log.Info("TEST: update machine")
+		if err := u.updateMachine(name, machine, machineCreator); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) applyAnnotation(m *clusterapiv1alpha1.Machine) error {
-	original, err := json.Marshal(m)
-	if err != nil {
-		return errors.WithStack(err)
-	}
+func (u *ControlPlaneUpgrader) applyAnnotation(m *clusterapiv1alpha2.Machine) error {
+	original := m.DeepCopy()
 	if m.Annotations == nil {
 		m.Annotations = map[string]string{}
 	}
 	m.Annotations[UpgradeIDAnnotationKey] = u.upgradeID
-	updated, err := json.Marshal(m)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	patch, err := jsonpatch.CreateMergePatch(original, updated)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	if _, err := u.managementClusterAPIClient.Machines(m.Namespace).Patch(m.Name, types.MergePatchType, patch); err != nil {
-		return errors.WithStack(err)
-	}
+	updated := m.DeepCopy()
+
+	// TODO: double check this patch strategy
+	u.ctrlClient.Patch(context.TODO(), updated, ctrlclient.MergeFrom(original))
+
 	return nil
 }
 
@@ -357,15 +404,10 @@ func (u *ControlPlaneUpgrader) retry(node *v1.Node, count int, interval time.Dur
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) deleteMachine(machine *clusterapiv1alpha1.Machine) error {
+func (u *ControlPlaneUpgrader) deleteMachine(machine *clusterapiv1alpha2.Machine) error {
 	u.log.Info("Deleting existing machine", "namespace", machine.Namespace, "name", machine.Name)
 
-	propagationPolicy := metav1.DeletePropagationForeground
-	deleteOptions := &metav1.DeleteOptions{
-		PropagationPolicy: &propagationPolicy,
-	}
-
-	err := u.managementClusterAPIClient.Machines(u.clusterNamespace).Delete(machine.Name, deleteOptions)
+	err := u.ctrlClient.Delete(context.TODO(), machine, ctrlclient.PropagationPolicy(metav1.DeletePropagationForeground))
 	return errors.WithStack(err)
 }
 
@@ -380,13 +422,20 @@ func hostnameForNode(node *v1.Node) string {
 
 // Split this into getting machines
 // Then pulling provider IDs
-func (u *ControlPlaneUpgrader) listMachines() (*clusterapiv1alpha1.MachineList, error) {
-	listOptions := metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("cluster.k8s.io/cluster-name=%s,set=controlplane", u.clusterName),
-	}
+func (u *ControlPlaneUpgrader) listMachines() (*clusterapiv1alpha2.MachineList, error) {
 
-	u.log.Info("Listing machines", "labelSelector", listOptions.LabelSelector)
-	machines, err := u.managementClusterAPIClient.Machines(u.clusterNamespace).List(listOptions)
+	labels := ctrlclient.MatchingLabels{
+		"cluster.x-k8s.io/cluster-name":  u.clusterName,
+		"cluster.x-k8s.io/control-plane": "true",
+	}
+	selectors := []ctrlclient.ListOption{
+		labels,
+		ctrlclient.InNamespace(u.clusterNamespace),
+	}
+	machines := &clusterapiv1alpha2.MachineList{}
+
+	u.log.Info("Listing machines", "labelSelector", labels)
+	err := u.ctrlClient.List(context.TODO(), machines, selectors...)
 	if err != nil {
 		return nil, errors.Wrap(err, "error listing machines")
 	}
@@ -441,11 +490,14 @@ func (u *ControlPlaneUpgrader) oldNodeToEtcdMemberId(timeout time.Duration) erro
 
 // deleteEtcdMember deletes the old etcd member
 func (u *ControlPlaneUpgrader) deleteEtcdMember(timeout time.Duration, newNode string, etcdMemberId string) error {
+	u.log.Info("TEST:", "new node", newNode)
 	u.log.Info("deleteEtcdMember")
 	pods, err := u.listEtcdPods()
 	if err != nil {
 		return err
 	}
+	u.log.Info("TEST: length of pods can u see this? :)")
+
 	if len(pods) == 0 {
 		return errors.New("found 0 etcd pods")
 	}
@@ -466,6 +518,7 @@ func (u *ControlPlaneUpgrader) deleteEtcdMember(timeout time.Duration, newNode s
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	u.log.Info("TEST: etcdctlforpod")
 	_, _, err = u.etcdctlForPod(ctx, pod, "member", "remove", etcdMemberId)
 	return err
 }
@@ -507,6 +560,9 @@ func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, a
 	}
 
 	fullArgs = append(fullArgs, args...)
+
+	u.log.Info("HIT 123", "pod-namespace", pod.Namespace)
+	u.log.Info("HIT 123", "pod-name", pod.Name)
 
 	opts := kubernetes.PodExecInput{
 		RestConfig:       u.targetRestConfig,

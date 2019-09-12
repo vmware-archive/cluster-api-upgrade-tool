@@ -5,6 +5,7 @@ package upgrade
 
 import (
 	"fmt"
+	"io/ioutil"
 	"time"
 
 	"github.com/blang/semver"
@@ -15,8 +16,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	clusterapiv1alpha1client "sigs.k8s.io/cluster-api/pkg/client/clientset_generated/clientset/typed/cluster/v1alpha1"
-	"sigs.k8s.io/cluster-api/pkg/controller/noderefutil"
+	clusterapiv1alpha2client "sigs.k8s.io/cluster-api/cmd/clusterctl/clusterdeployer/clusterclient"
+	"sigs.k8s.io/cluster-api/controllers/noderefutil"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type base struct {
@@ -25,12 +27,14 @@ type base struct {
 	desiredVersion             semver.Version
 	clusterNamespace           string
 	clusterName                string
-	managementClusterAPIClient clusterapiv1alpha1client.ClusterV1alpha1Interface
+	managementClusterAPIClient clusterapiv1alpha2client.Client
+	ctrlClient                 ctrlclient.Client
 	targetRestConfig           *rest.Config
 	targetKubernetesClient     kubernetes.Interface
 	providerIDsToNodes         map[string]*v1.Node
 	imageField, imageID        string
 	upgradeID                  string
+	machineGetter              machineGetter
 }
 
 func newBase(log logr.Logger, config Config) (*base, error) {
@@ -51,14 +55,25 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 		return nil, err
 	}
 
-	log.Info("Creating management cluster api client")
-	managementClusterAPIClient, err := clusterapiv1alpha1client.NewForConfig(managementRestConfig)
+	log.Info("Creating controller runtime client")
+	ctrlRuntimeClient, err := ctrlclient.New(managementRestConfig, ctrlclient.Options{}) // @TODO use NewCached() from cluster-api?
 	if err != nil {
+		return nil, errors.Wrap(err, "error creating controller runtime client")
+	}
+
+	log.Info("Creating management cluster api client")
+	kubeconfig, err := ioutil.ReadFile(config.ManagementCluster.Kubeconfig)
+	if err != nil {
+		return nil, errors.Wrap(err, "error creating management cluster api client")
+	}
+	managementClusterAPIClient, err := clusterapiv1alpha2client.New(string(kubeconfig))
+	if err != nil {
+		log.Info("HIT HIT HIT", "KUBECONFIG", config.ManagementCluster.Kubeconfig)
 		return nil, errors.Wrap(err, "error creating management cluster api client")
 	}
 
 	log.Info("Retrieving cluster from management cluster", "cluster-namespace", config.TargetCluster.Namespace, "cluster-name", config.TargetCluster.Name)
-	cluster, err := managementClusterAPIClient.Clusters(config.TargetCluster.Namespace).Get(config.TargetCluster.Name, metav1.GetOptions{})
+	cluster, err := managementClusterAPIClient.GetCluster(config.TargetCluster.Name, config.TargetCluster.Namespace)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -108,11 +123,13 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 		clusterNamespace:           config.TargetCluster.Namespace,
 		clusterName:                config.TargetCluster.Name,
 		managementClusterAPIClient: managementClusterAPIClient,
+		ctrlClient:                 ctrlRuntimeClient,
 		targetRestConfig:           targetRestConfig,
 		targetKubernetesClient:     targetKubernetesClient,
 		imageField:                 config.MachineUpdates.Image.Field,
 		imageID:                    config.MachineUpdates.Image.ID,
 		upgradeID:                  config.UpgradeID,
+		machineGetter:              &GetMachine{ctrlRuntimeClient},
 	}, nil
 }
 
