@@ -9,12 +9,11 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/sirupsen/logrus"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/upgrade"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	clusterapiv1alpha2 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -29,14 +28,14 @@ func (l *log) Info(msg string, keysAndValues ...interface{})             {}
 func (l *log) Enabled() bool                                             { return false }
 
 type client struct {
-	machine *clusterapiv1alpha2.Machine
+	machine *clusterv1.Machine
 	nodes   *v1.NodeList
 }
 
-func (m *client) Create(machine *clusterapiv1alpha2.Machine) (*clusterapiv1alpha2.Machine, error) {
+func (m *client) Create(machine *clusterv1.Machine) (*clusterv1.Machine, error) {
 	return m.machine, nil
 }
-func (m *client) Get(string, metav1.GetOptions) (*clusterapiv1alpha2.Machine, error) {
+func (m *client) Get(namespace, name string) (*clusterv1.Machine, error) {
 	return m.machine, nil
 }
 func (m *client) List(options metav1.ListOptions) (*v1.NodeList, error) {
@@ -51,39 +50,37 @@ func (p *pclient) Get(string, metav1.GetOptions) (*v1.Pod, error) {
 	return p.pod, nil
 }
 
-type GetMachineMock struct {
-	ctrlclient ctrlclient.Client
+type fakeClient struct {
+	ctrlclient.Client
 	providerID string
 }
 
-func (m *GetMachineMock) Get(name string, namespace string) (*clusterapiv1alpha2.Machine, error) {
-	machine := &clusterapiv1alpha2.Machine{
-		Spec: clusterapiv1alpha2.MachineSpec{
-			ProviderID: &m.providerID,
-		},
-	}
-	if err := m.ctrlclient.Get(context.TODO(), ctrlclient.ObjectKey{Namespace: namespace, Name: name}, machine); err != nil {
-		return nil, err
+func (b fakeClient) Get(ctx context.Context, key ctrlclient.ObjectKey, obj runtime.Object) error {
+	machine := obj.(*clusterv1.Machine)
+
+	err := b.Client.Get(ctx, key, machine)
+	if err != nil {
+		return err
 	}
 
-	return machine, nil
+	machine.Spec.ProviderID = &b.providerID
+	return nil
 }
 
 func TestNewMachine(t *testing.T) {
-	providerID := "localhost:////my-machine-identifier"
-
 	scheme := runtime.NewScheme()
 	scheme.AddKnownTypes(
-		clusterapiv1alpha2.GroupVersion,
-		&clusterapiv1alpha2.Machine{},
+		clusterv1.GroupVersion,
+		&clusterv1.Machine{},
 	)
-	fake := fake.NewFakeClientWithScheme(scheme)
+	fake := fakeClient{
+		Client:     fake.NewFakeClientWithScheme(scheme),
+		providerID: "localhost:////my-machine-identifier",
+	}
 
 	mc := upgrade.NewMachineCreator(
-		upgrade.WithMachineGetter(&GetMachineMock{ctrlclient: fake, providerID: providerID}),
-		upgrade.WithControllerRuntimeClient(fake),
+		upgrade.WithManagementClient(fake),
 		upgrade.WithLogger(&log{}),
-		upgrade.WithNamespace("test"),
 		upgrade.WithNodeLister(&client{
 			nodes: &v1.NodeList{
 				Items: []v1.Node{
@@ -136,14 +133,12 @@ func TestNewMachine(t *testing.T) {
 		upgrade.WithNodeReadyTimeout(10*time.Second),
 		upgrade.WithProviderIDTimeout(5*time.Second),
 	)
-	machineToReplace := &clusterapiv1alpha2.Machine{
+	machineToReplace := &clusterv1.Machine{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "testmachine-one-replace",
 		},
 	}
-	out, node, err := mc.NewMachine("testmachine-one-two", machineToReplace)
-	logrus.Infoln(out)
-	logrus.Infoln(node)
+	out, node, err := mc.NewMachine("test", "testmachine-one-two", machineToReplace)
 	if err != nil {
 		t.Fatalf("%+v", err)
 	}

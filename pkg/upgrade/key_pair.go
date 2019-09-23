@@ -14,9 +14,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	clusterapiv1alpha2 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
 	"sigs.k8s.io/cluster-api/util/certs"
 	"sigs.k8s.io/cluster-api/util/kubeconfig"
+	capiSecret "sigs.k8s.io/cluster-api/util/secret"
 )
 
 // kubeconfigSecretKey is the key where the kubeconfig is stored in the secret.
@@ -52,7 +53,7 @@ func NewRestConfigFromKubeconfigSecretRef(secrets secrets, name string) (*rest.C
 // NewRestConfigFromCAClusterField returns a rest.Config configured with the CA key pair found in the cluster's
 // object in the fieldpath specified. For example, "spec.providerSpec.value.caKeyPair" traverses the cluster
 // object going through each '.' delimited field.
-func NewRestConfigFromCAClusterField(cluster *clusterapiv1alpha2.Cluster, fieldPath, apiEndpoint string) (*rest.Config, error) {
+func NewRestConfigFromCAClusterField(cluster *clusterv1.Cluster, fieldPath, apiEndpoint string) (*rest.Config, error) {
 	pathParts := strings.Split(fieldPath, ".")
 	certPath := append(pathParts, "cert")
 	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cluster)
@@ -97,7 +98,7 @@ func NewRestConfigFromCASecretRef(secretClient secrets, name, clusterName, apiEn
 		return nil, errors.Wrap(err, "error retrieving key pair secret ref")
 	}
 
-	certEncoded, ok := secret.Data["cert"]
+	certEncoded, ok := secret.Data[capiSecret.TLSCrtDataName]
 	if !ok {
 		return nil, errors.New("unable to find key pair cert in secret")
 	}
@@ -106,7 +107,7 @@ func NewRestConfigFromCASecretRef(secretClient secrets, name, clusterName, apiEn
 		return nil, errors.Wrap(err, "error decoding key pair cert from secret")
 	}
 
-	keyEncoded, ok := secret.Data["key"]
+	keyEncoded, ok := secret.Data[capiSecret.TLSKeyDataName]
 	if !ok {
 		return nil, errors.New("unable to find key pair key in secret")
 	}

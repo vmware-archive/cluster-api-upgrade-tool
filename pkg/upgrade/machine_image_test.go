@@ -9,14 +9,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	//"k8s.io/apimachinery/pkg/runtime"
 	corev1 "k8s.io/api/core/v1"
-	clusterapiv1alpha2 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
 )
 
 func TestUpdateMachineSpecImage(t *testing.T) {
-	machine := &clusterapiv1alpha2.Machine{
-		Spec: clusterapiv1alpha2.MachineSpec{
+	machine := &clusterv1.Machine{
+		Spec: clusterv1.MachineSpec{
 			InfrastructureRef: corev1.ObjectReference{
 				Name: "foo",
 			},

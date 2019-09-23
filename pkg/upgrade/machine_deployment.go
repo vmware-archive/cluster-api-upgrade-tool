@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
-	clusterapiv1alpha2 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -40,18 +40,17 @@ func (u *MachineDeploymentUpgrader) Upgrade() error {
 	return u.upgradeMachineDeployments(machineDeployments)
 }
 
-func (u *MachineDeploymentUpgrader) listMachineDeployments() (*clusterapiv1alpha2.MachineDeploymentList, error) {
+func (u *MachineDeploymentUpgrader) listMachineDeployments() (*clusterv1.MachineDeploymentList, error) {
 	u.log.Info("Listing machine deployments")
 
-	selectors := []ctrlclient.ListOption{
+	listOptions := []ctrlclient.ListOption{
 		ctrlclient.MatchingLabels{
-			"cluster.k8s.io/cluster-name": u.clusterName,
-			"set":                         "node",
+			clusterv1.MachineClusterLabelName: u.clusterName,
 		},
 		ctrlclient.InNamespace(u.clusterNamespace),
 	}
-	list := &clusterapiv1alpha2.MachineDeploymentList{}
-	err := u.ctrlClient.List(context.TODO(), list, selectors...)
+	list := &clusterv1.MachineDeploymentList{}
+	err := u.managerClusterClient.List(context.TODO(), list, listOptions...)
 	if err != nil {
 		return nil, errors.Wrap(err, "error listing machines")
 	}
@@ -59,7 +58,7 @@ func (u *MachineDeploymentUpgrader) listMachineDeployments() (*clusterapiv1alpha
 	return list, nil
 }
 
-func (u *MachineDeploymentUpgrader) upgradeMachineDeployments(list *clusterapiv1alpha2.MachineDeploymentList) error {
+func (u *MachineDeploymentUpgrader) upgradeMachineDeployments(list *clusterv1.MachineDeploymentList) error {
 	for _, machineDeployment := range list.Items {
 		// Skip any machineDeployments that already have this upgrade annotation id
 		if val, ok := machineDeployment.Spec.Template.Annotations[UpgradeIDAnnotationKey]; ok && val == u.upgradeID {
@@ -73,15 +72,16 @@ func (u *MachineDeploymentUpgrader) upgradeMachineDeployments(list *clusterapiv1
 	return nil
 }
 
-func (u *MachineDeploymentUpgrader) updateMachineDeployment(machineDeployment *clusterapiv1alpha2.MachineDeployment) error {
+func (u *MachineDeploymentUpgrader) updateMachineDeployment(machineDeployment *clusterv1.MachineDeployment) error {
 	u.log.Info("Updating MachineDeployment", "namespace", machineDeployment.Namespace, "name", machineDeployment.Name)
 
 	// Get the original, pre-modified version in json
-	original := machineDeployment.DeepCopy()
+	patch := ctrlclient.MergeFrom(machineDeployment.DeepCopy())
 
 	// Make the modification(s)
 	desiredVersion := u.desiredVersion.String()
 	machineDeployment.Spec.Template.Spec.Version = &desiredVersion
+
 	// Add the upgrade ID to this template so all machines get it
 	if machineDeployment.Spec.Template.Annotations == nil {
 		machineDeployment.Spec.Template.Annotations = map[string]string{}
@@ -95,10 +95,7 @@ func (u *MachineDeploymentUpgrader) updateMachineDeployment(machineDeployment *c
 	}
 
 	// Get the updated version in json
-	updated := machineDeployment.DeepCopy()
-
-	err := u.ctrlClient.Patch(context.TODO(), updated, ctrlclient.MergeFrom(original))
-	if err != nil {
+	if err := u.managerClusterClient.Patch(context.TODO(), machineDeployment, patch); err != nil {
 		return errors.Wrapf(err, "error patching machinedeployment %s", machineDeployment.Name)
 	}
 

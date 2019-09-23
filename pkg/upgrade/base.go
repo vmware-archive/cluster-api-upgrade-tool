@@ -4,8 +4,8 @@
 package upgrade
 
 import (
+	"context"
 	"fmt"
-	"io/ioutil"
 	"time"
 
 	"github.com/blang/semver"
@@ -14,27 +14,27 @@ import (
 	kubernetes2 "github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	clusterapiv1alpha2client "sigs.k8s.io/cluster-api/cmd/clusterctl/clusterdeployer/clusterclient"
+	bootstrapv1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/api/v1alpha2"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
 	"sigs.k8s.io/cluster-api/controllers/noderefutil"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type base struct {
-	log                        logr.Logger
-	userVersion                semver.Version
-	desiredVersion             semver.Version
-	clusterNamespace           string
-	clusterName                string
-	managementClusterAPIClient clusterapiv1alpha2client.Client
-	ctrlClient                 ctrlclient.Client
-	targetRestConfig           *rest.Config
-	targetKubernetesClient     kubernetes.Interface
-	providerIDsToNodes         map[string]*v1.Node
-	imageField, imageID        string
-	upgradeID                  string
-	machineGetter              machineGetter
+	log                    logr.Logger
+	userVersion            semver.Version
+	desiredVersion         semver.Version
+	clusterNamespace       string
+	clusterName            string
+	managerClusterClient   ctrlclient.Client
+	targetRestConfig       *rest.Config
+	targetKubernetesClient kubernetes.Interface
+	providerIDsToNodes     map[string]*v1.Node
+	imageField, imageID    string
+	upgradeID              string
 }
 
 func newBase(log logr.Logger, config Config) (*base, error) {
@@ -54,26 +54,20 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 	if err != nil {
 		return nil, err
 	}
+	scheme := runtime.NewScheme()
+	bootstrapv1.AddToScheme(scheme)
+	clusterv1.AddToScheme(scheme)
+	v1.AddToScheme(scheme)
 
-	log.Info("Creating controller runtime client")
-	ctrlRuntimeClient, err := ctrlclient.New(managementRestConfig, ctrlclient.Options{}) // @TODO use NewCached() from cluster-api?
+	log.Info("Creating management cluster client")
+	ctrlRuntimeClient, err := ctrlclient.New(managementRestConfig, ctrlclient.Options{Scheme: scheme})
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating controller runtime client")
 	}
 
-	log.Info("Creating management cluster api client")
-	kubeconfig, err := ioutil.ReadFile(config.ManagementCluster.Kubeconfig)
-	if err != nil {
-		return nil, errors.Wrap(err, "error creating management cluster api client")
-	}
-	managementClusterAPIClient, err := clusterapiv1alpha2client.New(string(kubeconfig))
-	if err != nil {
-		log.Info("HIT HIT HIT", "KUBECONFIG", config.ManagementCluster.Kubeconfig)
-		return nil, errors.Wrap(err, "error creating management cluster api client")
-	}
-
 	log.Info("Retrieving cluster from management cluster", "cluster-namespace", config.TargetCluster.Namespace, "cluster-name", config.TargetCluster.Name)
-	cluster, err := managementClusterAPIClient.GetCluster(config.TargetCluster.Name, config.TargetCluster.Namespace)
+	cluster := &clusterv1.Cluster{}
+	err = ctrlRuntimeClient.Get(context.TODO(), ctrlclient.ObjectKey{Namespace: config.TargetCluster.Namespace, Name: config.TargetCluster.Name}, cluster)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -94,7 +88,6 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 	} else if config.TargetCluster.CAKeyPair.ClusterField != "" {
 		targetRestConfig, err = NewRestConfigFromCAClusterField(cluster, config.TargetCluster.CAKeyPair.ClusterField, config.TargetCluster.CAKeyPair.APIEndpoint)
 	}
-
 	if err != nil {
 		return nil, err
 	}
@@ -117,19 +110,17 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 	log.Info(infoMessage)
 
 	return &base{
-		log:                        log,
-		userVersion:                userVersion,
-		desiredVersion:             desiredVersion,
-		clusterNamespace:           config.TargetCluster.Namespace,
-		clusterName:                config.TargetCluster.Name,
-		managementClusterAPIClient: managementClusterAPIClient,
-		ctrlClient:                 ctrlRuntimeClient,
-		targetRestConfig:           targetRestConfig,
-		targetKubernetesClient:     targetKubernetesClient,
-		imageField:                 config.MachineUpdates.Image.Field,
-		imageID:                    config.MachineUpdates.Image.ID,
-		upgradeID:                  config.UpgradeID,
-		machineGetter:              &GetMachine{ctrlRuntimeClient},
+		log:                    log,
+		userVersion:            userVersion,
+		desiredVersion:         desiredVersion,
+		clusterNamespace:       config.TargetCluster.Namespace,
+		clusterName:            config.TargetCluster.Name,
+		managerClusterClient:   ctrlRuntimeClient,
+		targetRestConfig:       targetRestConfig,
+		targetKubernetesClient: targetKubernetesClient,
+		imageField:             config.MachineUpdates.Image.Field,
+		imageID:                config.MachineUpdates.Image.ID,
+		upgradeID:              config.UpgradeID,
 	}, nil
 }
 

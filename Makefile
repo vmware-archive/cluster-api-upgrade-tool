@@ -11,7 +11,7 @@ endif
 
 .PHONY: test
 test: $(CAPDCTL)
-	go test -count=1 -v -timeout=20m $(TEST_ARGS) ./...
+	go test -count=1 -v -timeout=20m $(TEST_ARGS) .
 
 # Build capdctl
 $(CAPDCTL): $(TOOLS_DIR)/go.mod
