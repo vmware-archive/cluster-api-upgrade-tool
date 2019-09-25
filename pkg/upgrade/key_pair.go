@@ -44,7 +44,7 @@ func NewRestConfigFromKubeconfigSecretRef(secrets secrets, name string) (*rest.C
 	// No need to decode from b64 since that's a kubectl thing
 	kc, ok := secret.Data[kubeconfigSecretKey]
 	if !ok {
-		return nil, errors.Errorf("item 'kubeconfig' not found in secret %q", name)
+		return nil, errors.Errorf("item 'value' not found in secret %q", name)
 	}
 	cfg, err := clientcmd.RESTConfigFromKubeConfig(kc)
 	return cfg, errors.WithStack(err)
