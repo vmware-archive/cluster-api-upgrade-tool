@@ -40,8 +40,7 @@ func main() {
 	}
 
 	root.Flags().StringVar(&upgradeConfig.ManagementCluster.Kubeconfig, "kubeconfig",
-		"", "The kubeconfig path for the management cluster (required)")
-	root.MarkFlagRequired("kubeconfig")
+		"", "The kubeconfig path for the management cluster")
 
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.Namespace,
 		"cluster-namespace", "", "The namespace of target cluster (required)")
