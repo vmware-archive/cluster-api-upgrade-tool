@@ -167,10 +167,11 @@ func (n *MachineCreator) waitForMatchingNode(rawProviderID string, timeout time.
 			return false, err
 		}
 		for _, node := range nodes.Items {
-			// TODO(chuckha) Update to use noderefutil.Equals when we use a more recent cluster-api
 			nodeID, err := noderefutil.NewProviderID(node.Spec.ProviderID)
 			if err != nil {
-				return false, err
+				n.log.Error(err, "unable to process node's provider ID", "node", node.Name, "provider-id", node.Spec.ProviderID)
+				// Continue instead of returning so we can process all the nodes in the list
+				continue
 			}
 			if providerID.Equals(nodeID) {
 				n.log.Info("Found node", "name", node.Name)

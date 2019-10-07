@@ -2,10 +2,7 @@ module github.com/vmware/cluster-api-upgrade-tool/hack/tools
 
 go 1.12
 
-require (
-	k8s.io/utils v0.0.0-20190801114015-581e00157fb1 // indirect
-	sigs.k8s.io/cluster-api-provider-docker v0.1.3
-)
+require sigs.k8s.io/cluster-api-provider-docker v0.1.3
 
 replace (
 	k8s.io/api => k8s.io/api v0.0.0-20181213150558-05914d821849

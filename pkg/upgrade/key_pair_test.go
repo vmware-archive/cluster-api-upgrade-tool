@@ -22,8 +22,8 @@ func TestNewRestConfigFromCASecretRef(t *testing.T) {
 	secret := &secrets{
 		secret: &v1.Secret{
 			Data: map[string][]byte{
-				"cert": []byte(caCertificate),
-				"key":  []byte(caPrivateKey),
+				"tls.crt": []byte(caCertificate),
+				"tls.key":  []byte(caPrivateKey),
 			},
 		},
 	}
