@@ -13,10 +13,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	"k8s.io/apimachinery/pkg/types"
-
 	"github.com/blang/semver"
-	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
@@ -24,8 +21,13 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
-	"sigs.k8s.io/cluster-api/pkg/controller/noderefutil"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	bootstrapv1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/api/v1alpha2"
+	kubeadmv1beta1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/kubeadm/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	"sigs.k8s.io/cluster-api/controllers/external"
+	"sigs.k8s.io/cluster-api/controllers/noderefutil"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -86,33 +88,40 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 		}
 	}
 
+	u.log.Info("Checking etcd health")
 	if err := u.etcdClusterHealthCheck(time.Minute * 1); err != nil {
 		return err
 	}
 
+	u.log.Info("Updating provider IDs to nodes")
 	if err := u.UpdateProviderIDsToNodes(); err != nil {
 		return err
 	}
 
+	u.log.Info("Updating kubernetes version")
 	if err := u.updateAndUploadKubeadmKubernetesVersion(); err != nil {
 		return err
 	}
 
-	return u.updateMachines(machines)
+	u.log.Info("Updating cluster api CRDs")
+	return u.updateCRDs(machines)
 }
 
 func isMinorVersionUpgrade(base, update semver.Version) bool {
 	return base.Major == update.Major && base.Minor < update.Minor
 }
 
-func (u *ControlPlaneUpgrader) minMaxControlPlaneVersions(machines *clusterapiv1alpha1.MachineList) (semver.Version, semver.Version, error) {
+func (u *ControlPlaneUpgrader) minMaxControlPlaneVersions(machines *clusterv1.MachineList) (semver.Version, semver.Version, error) {
 	var min, max semver.Version
 
 	for _, machine := range machines.Items {
-		if machine.Spec.Versions.ControlPlane != "" {
-			machineVersion, err := semver.ParseTolerant(machine.Spec.Versions.ControlPlane)
+		if machine.Spec.Version == nil {
+			return semver.Version{}, semver.Version{}, errors.Errorf("nil control plane version for machine %s/%s", machine.Namespace, machine.Name)
+		}
+		if *machine.Spec.Version != "" {
+			machineVersion, err := semver.ParseTolerant(*machine.Spec.Version)
 			if err != nil {
-				return min, max, errors.Wrapf(err, "invalid control plane version %q for machine %s/%s", machine.Spec.Versions.ControlPlane, machine.Namespace, machine.Name)
+				return min, max, errors.Wrapf(err, "invalid control plane version %q for machine %s/%s", *machine.Spec.Version, machine.Namespace, machine.Name)
 			}
 			if min.EQ(unsetVersion) || machineVersion.LT(min) {
 				min = machineVersion
@@ -243,7 +252,48 @@ func (u *ControlPlaneUpgrader) etcdClusterHealthCheck(timeout time.Duration) err
 	return err
 }
 
-func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.MachineList) error {
+func (u *ControlPlaneUpgrader) updateMachine(name string, machine clusterv1.Machine, machineCreator *MachineCreator) error {
+	originalProviderID, err := noderefutil.NewProviderID(*machine.Spec.ProviderID)
+	if err != nil {
+		return err
+	}
+
+	oldNode := u.GetNodeFromProviderID(originalProviderID.ID())
+	if oldNode == nil {
+		u.log.Info("Couldn't retrieve oldNode", "id", originalProviderID.String())
+		return fmt.Errorf("unknown previous node %q", originalProviderID.String())
+	}
+
+	oldHostName := hostnameForNode(oldNode)
+
+	newMachine, node, err := machineCreator.NewMachine(u.clusterNamespace, name, &machine)
+	if err != nil {
+		return err
+	}
+	nodeHostname := hostnameForNode(node)
+
+	// This used to happen when a new machine was created as a side effect. Must still update the mapping.
+	if err := u.UpdateProviderIDsToNodes(); err != nil {
+		return err
+	}
+
+	// delete old etcd member
+	err = u.deleteEtcdMember(time.Minute*1, nodeHostname, u.oldNodeToEtcdMember[oldHostName])
+	if err != nil {
+		return errors.Wrapf(err, "unable to delete old etcd member %s", u.oldNodeToEtcdMember[oldHostName])
+	}
+
+	if err := u.deleteMachine(&machine); err != nil {
+		return err
+	}
+
+	if err := u.applyAnnotation(newMachine); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) updateCRDs(machines *clusterv1.MachineList) error {
 	// save all etcd member id corresponding to node before upgrade starts
 	err := u.oldNodeToEtcdMemberId(time.Minute * 1)
 	if err != nil {
@@ -257,9 +307,7 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 	}
 
 	machineCreator := NewMachineCreator(
-		// TODO(chuckha) This name looks super weird. This machine creator is the k8s machine creator.
-		WithMachineCreator(u.managementClusterAPIClient.Machines(u.clusterNamespace)),
-		WithMachineGetter(u.managementClusterAPIClient.Machines(u.clusterNamespace)),
+		WithManagementClient(u.managerClusterClient),
 		WithNodeLister(u.targetKubernetesClient.CoreV1().Nodes()),
 		WithPodGetter(u.targetKubernetesClient.CoreV1().Pods("kube-system")),
 		WithMachineOptions(mo),
@@ -279,67 +327,163 @@ func (u *ControlPlaneUpgrader) updateMachines(machines *clusterapiv1alpha1.Machi
 			continue
 		}
 
-		originalProviderID, err := noderefutil.NewProviderID(*machine.Spec.ProviderID)
+		// assume the original name is controlplane-<index> or controlplane-<index>-<timestamp>
+		// let's set the new name to controlplane-<index>-<timestamp>
+		nameParts := strings.Split(machine.Name, "-")
+		if len(nameParts) < 2 {
+			return errors.Errorf("machine name %q does not match expected format <name>-<index> or <name>-<index>-<timestamp>", machine.Name)
+		}
+		name := fmt.Sprintf("%s-%s-%d", nameParts[0], nameParts[1], time.Now().Unix())
+		// TODO: generate the name based off each respective object
+
+		if err := u.updateInfrastructureReference(name, &machine); err != nil {
+			return err
+		}
+
+		updatedBootstrap, err := u.updateBootstrapConfig(name, &machine)
 		if err != nil {
 			return err
 		}
 
-		oldNode := u.GetNodeFromProviderID(originalProviderID.ID())
-		if oldNode == nil {
-			u.log.Info("Couldn't retrieve oldNode", "id", originalProviderID.String())
-			return fmt.Errorf("unknown previous node %q", originalProviderID.String())
-		}
-
-		oldHostName := hostnameForNode(oldNode)
-
-		newMachine, node, err := machineCreator.NewMachine(&machine)
+		err = u.updateSecrets(updatedBootstrap)
 		if err != nil {
 			return err
 		}
-		nodeHostname := hostnameForNode(node)
 
-		// This used to happen when a new machine was created as a side effect. Must still update the mapping.
-		if err := u.UpdateProviderIDsToNodes(); err != nil {
-			return err
-		}
-
-		// delete old etcd member
-		err = u.deleteEtcdMember(time.Minute*1, nodeHostname, u.oldNodeToEtcdMember[oldHostName])
-		if err != nil {
-			return errors.Wrapf(err, "unable to delete old etcd member %s", u.oldNodeToEtcdMember[oldHostName])
-		}
-
-		if err := u.deleteMachine(&machine); err != nil {
-			return err
-		}
-
-		if err := u.applyAnnotation(newMachine); err != nil {
+		if err := u.updateMachine(name, machine, machineCreator); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) applyAnnotation(m *clusterapiv1alpha1.Machine) error {
-	original, err := json.Marshal(m)
+func (u *ControlPlaneUpgrader) updateSecrets(bootstrap *bootstrapv1.KubeadmConfig) error {
+	secretNames := []string{
+		fmt.Sprintf("%s-ca", u.clusterName),
+		fmt.Sprintf("%s-etcd", u.clusterName),
+		fmt.Sprintf("%s-sa", u.clusterName),
+		fmt.Sprintf("%s-proxy", u.clusterName),
+	}
+
+	for _, secretName := range secretNames {
+		secret := &v1.Secret{}
+		if err := u.managerClusterClient.Get(context.TODO(), ctrlclient.ObjectKey{Name: secretName, Namespace: u.clusterNamespace}, secret); err != nil {
+			return errors.WithStack(err)
+		}
+		patch := ctrlclient.MergeFrom(secret.DeepCopyObject())
+
+		secret.SetOwnerReferences([]metav1.OwnerReference{
+			metav1.OwnerReference{
+				APIVersion: bootstrapv1.GroupVersion.String(),
+				Kind:       "KubeadmConfig",
+				Name:       bootstrap.Name,
+				UID:        bootstrap.UID,
+			},
+		})
+
+		if err := u.managerClusterClient.Patch(context.TODO(), secret.DeepCopyObject(), patch); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) updateBootstrapConfig(name string, machine *clusterv1.Machine) (*bootstrapv1.KubeadmConfig, error) {
+	// copy node registration
+	bootstrap := &bootstrapv1.KubeadmConfig{}
+	if machine.Spec.Bootstrap.ConfigRef.Namespace == "" {
+		machine.Spec.Bootstrap.ConfigRef.Namespace = u.clusterNamespace
+	}
+	err := u.managerClusterClient.Get(context.TODO(), ctrlclient.ObjectKey{Name: machine.Spec.Bootstrap.ConfigRef.Name, Namespace: machine.Spec.Bootstrap.ConfigRef.Namespace}, bootstrap)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	// modify bootstrap config
+	bootstrap.SetName(name)
+	bootstrap.SetResourceVersion("")
+	bootstrap.SetOwnerReferences(nil)
+
+	// find node registration
+	nodeRegistration := kubeadmv1beta1.NodeRegistrationOptions{}
+	if bootstrap.Spec.InitConfiguration != nil {
+		nodeRegistration = bootstrap.Spec.InitConfiguration.NodeRegistration
+	} else if bootstrap.Spec.JoinConfiguration != nil {
+		nodeRegistration = bootstrap.Spec.JoinConfiguration.NodeRegistration
+	}
+	if bootstrap.Spec.JoinConfiguration == nil {
+		bootstrap.Spec.JoinConfiguration = &kubeadmv1beta1.JoinConfiguration{
+			ControlPlane: &kubeadmv1beta1.JoinControlPlane{},
+		}
+	}
+	bootstrap.Spec.JoinConfiguration.NodeRegistration = nodeRegistration
+
+	// clear init configuration
+	// When you have both the init configuration and the join configuration present
+	// for a control plane upgrade, kubeadm will use the init configuration instead
+	// of the join configuration. during upgrades, you will never be initializing a
+	// new node. It will always be joining an existing control plane.
+	bootstrap.Spec.InitConfiguration = nil
+
+	err = u.managerClusterClient.Create(context.TODO(), bootstrap)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	// update machine's bootstrap reference
+	machine.Spec.Bootstrap = clusterv1.Bootstrap{
+		ConfigRef: &v1.ObjectReference{
+			Kind:       "KubeadmConfig",
+			APIVersion: bootstrapv1.GroupVersion.String(),
+			Name:       name,
+			Namespace:  bootstrap.Namespace,
+		},
+	}
+
+	return bootstrap, nil
+}
+
+func (u *ControlPlaneUpgrader) updateInfrastructureReference(name string, machine *clusterv1.Machine) error {
+	// copy infrastructure object
+	if machine.Spec.InfrastructureRef.Namespace == "" {
+		machine.Spec.InfrastructureRef.Namespace = u.clusterNamespace
+	}
+	infraRef, err := external.Get(u.managerClusterClient, &machine.Spec.InfrastructureRef, machine.Namespace)
+	if err != nil {
+		return err
+	}
+
+	infraRef.SetResourceVersion("")
+	infraRef.SetName(name)
+	infraRef.SetOwnerReferences(nil)
+	unstructured.RemoveNestedField(infraRef.UnstructuredContent(), "spec", "providerID")
+
+	machine.Spec.InfrastructureRef.Name = name
+
+	// create infrastructure object
+	err = u.managerClusterClient.Create(context.TODO(), infraRef)
 	if err != nil {
 		return errors.WithStack(err)
 	}
+
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) applyAnnotation(m *clusterv1.Machine) error {
+	patch := ctrlclient.MergeFrom(m.DeepCopy())
+
 	if m.Annotations == nil {
 		m.Annotations = map[string]string{}
 	}
 	m.Annotations[UpgradeIDAnnotationKey] = u.upgradeID
-	updated, err := json.Marshal(m)
+
+	err := u.managerClusterClient.Patch(context.TODO(), m, patch)
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	patch, err := jsonpatch.CreateMergePatch(original, updated)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	if _, err := u.managementClusterAPIClient.Machines(m.Namespace).Patch(m.Name, types.MergePatchType, patch); err != nil {
-		return errors.WithStack(err)
-	}
+
 	return nil
 }
 
@@ -357,15 +501,10 @@ func (u *ControlPlaneUpgrader) retry(node *v1.Node, count int, interval time.Dur
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) deleteMachine(machine *clusterapiv1alpha1.Machine) error {
+func (u *ControlPlaneUpgrader) deleteMachine(machine *clusterv1.Machine) error {
 	u.log.Info("Deleting existing machine", "namespace", machine.Namespace, "name", machine.Name)
 
-	propagationPolicy := metav1.DeletePropagationForeground
-	deleteOptions := &metav1.DeleteOptions{
-		PropagationPolicy: &propagationPolicy,
-	}
-
-	err := u.managementClusterAPIClient.Machines(u.clusterNamespace).Delete(machine.Name, deleteOptions)
+	err := u.managerClusterClient.Delete(context.TODO(), machine)
 	return errors.WithStack(err)
 }
 
@@ -380,13 +519,19 @@ func hostnameForNode(node *v1.Node) string {
 
 // Split this into getting machines
 // Then pulling provider IDs
-func (u *ControlPlaneUpgrader) listMachines() (*clusterapiv1alpha1.MachineList, error) {
-	listOptions := metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("cluster.k8s.io/cluster-name=%s,set=controlplane", u.clusterName),
+func (u *ControlPlaneUpgrader) listMachines() (*clusterv1.MachineList, error) {
+	labels := ctrlclient.MatchingLabels{
+		clusterv1.MachineClusterLabelName:      u.clusterName,
+		clusterv1.MachineControlPlaneLabelName: "true",
 	}
+	listOptions := []ctrlclient.ListOption{
+		labels,
+		ctrlclient.InNamespace(u.clusterNamespace),
+	}
+	machines := &clusterv1.MachineList{}
 
-	u.log.Info("Listing machines", "labelSelector", listOptions.LabelSelector)
-	machines, err := u.managementClusterAPIClient.Machines(u.clusterNamespace).List(listOptions)
+	u.log.Info("Listing machines", "labelSelector", labels)
+	err := u.managerClusterClient.List(context.TODO(), machines, listOptions...)
 	if err != nil {
 		return nil, errors.Wrap(err, "error listing machines")
 	}
@@ -446,6 +591,7 @@ func (u *ControlPlaneUpgrader) deleteEtcdMember(timeout time.Duration, newNode s
 	if err != nil {
 		return err
 	}
+
 	if len(pods) == 0 {
 		return errors.New("found 0 etcd pods")
 	}

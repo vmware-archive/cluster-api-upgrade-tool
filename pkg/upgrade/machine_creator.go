@@ -4,6 +4,7 @@
 package upgrade
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -16,8 +17,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
-	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
-	"sigs.k8s.io/cluster-api/pkg/controller/noderefutil"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	"sigs.k8s.io/cluster-api/controllers/noderefutil"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type podGetter interface {
@@ -26,14 +28,6 @@ type podGetter interface {
 
 type nodeLister interface {
 	List(options metav1.ListOptions) (*v1.NodeList, error)
-}
-
-type machineGetter interface {
-	Get(string, metav1.GetOptions) (*clusterapiv1alpha1.Machine, error)
-}
-
-type machineCreator interface {
-	Create(*clusterapiv1alpha1.Machine) (*clusterapiv1alpha1.Machine, error)
 }
 
 // MachineOptions are the values that can change on a machine upgrade
@@ -50,14 +44,13 @@ type MachineCreator struct {
 	shouldWaitForMatchingNode bool
 	shouldWaitForNodeReady    bool
 	MachineOptions            MachineOptions
+	managementClient          ctrlclient.Client
 
 	providerIDTimeout   time.Duration
 	matchingNodeTimeout time.Duration
 	nodeReadyTimeout    time.Duration
 	podGetter           podGetter
 	nodeLister          nodeLister
-	machineGetter       machineGetter
-	machineCreator      machineCreator
 	log                 logr.Logger
 }
 
@@ -65,7 +58,7 @@ type MachineCreator struct {
 func NewMachineCreator(options ...MachineCreatorOption) *MachineCreator {
 	creator := &MachineCreator{
 		providerIDTimeout:         15 * time.Minute,
-		matchingNodeTimeout:       5 * time.Minute,
+		matchingNodeTimeout:       10 * time.Minute,
 		nodeReadyTimeout:          15 * time.Minute,
 		shouldWaitForMatchingNode: true,
 		shouldWaitForProviderID:   true,
@@ -79,7 +72,7 @@ func NewMachineCreator(options ...MachineCreatorOption) *MachineCreator {
 
 // NewMachine is the main interface to MachineCreator.
 // It creates a machine object on the management cluster and optionally waits for the backing node to become ready.
-func (n *MachineCreator) NewMachine(source *clusterapiv1alpha1.Machine) (*clusterapiv1alpha1.Machine, *v1.Node, error) {
+func (n *MachineCreator) NewMachine(namespace, name string, source *clusterv1.Machine) (*clusterv1.Machine, *v1.Node, error) {
 	newMachine := source.DeepCopy()
 
 	// have to clear this out so we can create a new machine
@@ -88,13 +81,7 @@ func (n *MachineCreator) NewMachine(source *clusterapiv1alpha1.Machine) (*cluste
 	// have to clear this out so the new machine can get its own provider id set
 	newMachine.Spec.ProviderID = nil
 
-	// assume the original name is controlplane-<index> or controlplane-<index>-<timestamp>
-	// let's set the new name to controlplane-<index>-<timestamp>
-	nameParts := strings.Split(source.Name, "-")
-	if len(nameParts) < 2 {
-		return nil, nil, errors.Errorf("machine name %q does not match expected format <name>-<index> or <name>-<index>-<timestamp>", source.Name)
-	}
-	newMachine.Name = fmt.Sprintf("%s-%s-%d", nameParts[0], nameParts[1], time.Now().Unix())
+	newMachine.Name = name
 
 	if n.MachineOptions.ImageField != "" && n.MachineOptions.ImageID != "" {
 		if err := updateMachineSpecImage(&newMachine.Spec, n.MachineOptions.ImageField, n.MachineOptions.ImageID); err != nil {
@@ -102,18 +89,17 @@ func (n *MachineCreator) NewMachine(source *clusterapiv1alpha1.Machine) (*cluste
 		}
 	}
 
-	newMachine.Spec.Versions.ControlPlane = n.MachineOptions.DesiredVersion.String()
-	newMachine.Spec.Versions.Kubelet = n.MachineOptions.DesiredVersion.String()
+	desiredVersion := n.MachineOptions.DesiredVersion.String()
+	newMachine.Spec.Version = &desiredVersion
 
 	n.log.Info("Creating new machine", "name", newMachine.Name)
 
-	createdMachine, err := n.machineCreator.Create(newMachine)
-	if err != nil {
+	if err := n.managementClient.Create(context.TODO(), newMachine); err != nil {
 		return nil, nil, errors.Wrapf(err, "Error creating machine: %s", newMachine.Name)
 	}
 
 	if n.shouldWaitForProviderID {
-		providerID, err := n.waitForProviderID(createdMachine.Namespace, createdMachine.Name, n.providerIDTimeout)
+		providerID, err := n.waitForProviderID(newMachine.Namespace, newMachine.Name, n.providerIDTimeout)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -127,25 +113,26 @@ func (n *MachineCreator) NewMachine(source *clusterapiv1alpha1.Machine) (*cluste
 					return nil, nil, err
 				}
 				// return ready node (could delete but here for explicitness)
-				return createdMachine, node, nil
+				return newMachine, node, nil
 			}
 			// return an unready node
-			return createdMachine, node, nil
+			return newMachine, node, nil
 		}
 		// return the created machine with provider ID and no node since we are not waiting for the node
-		return createdMachine, nil, nil
+		return newMachine, nil, nil
 	}
 	// return the created machine without a provider ID and no node since we waited for nothing
-	return createdMachine, nil, nil
+	return newMachine, nil, nil
 }
 
 func (n *MachineCreator) waitForProviderID(ns, name string, timeout time.Duration) (string, error) {
 	n.log.Info("waitForMachineProviderID start", "namespace", ns, "name", name)
 	var providerID string
 	err := wait.PollImmediate(5*time.Second, timeout, func() (bool, error) {
-		machine, err := n.machineGetter.Get(name, metav1.GetOptions{})
-		if err != nil {
-			return false, err
+
+		machine := &clusterv1.Machine{}
+		if err := n.managementClient.Get(context.TODO(), ctrlclient.ObjectKey{Name: name, Namespace: ns}, machine); err != nil {
+			return false, errors.WithStack(err)
 		}
 
 		if machine.Spec.ProviderID == nil {
@@ -290,19 +277,9 @@ func WithNodeLister(nl nodeLister) MachineCreatorOption {
 		n.nodeLister = nl
 	}
 }
-func WithMachineGetter(mg machineGetter) MachineCreatorOption {
-	return func(n *MachineCreator) {
-		n.machineGetter = mg
-	}
-}
 func WithMachineOptions(mo MachineOptions) MachineCreatorOption {
 	return func(n *MachineCreator) {
 		n.MachineOptions = mo
-	}
-}
-func WithMachineCreator(mc machineCreator) MachineCreatorOption {
-	return func(n *MachineCreator) {
-		n.machineCreator = mc
 	}
 }
 func WithLogger(l logr.Logger) MachineCreatorOption {
@@ -323,5 +300,10 @@ func WithMatchingNodeTimeout(timeout time.Duration) MachineCreatorOption {
 func WithNodeReadyTimeout(timeout time.Duration) MachineCreatorOption {
 	return func(n *MachineCreator) {
 		n.nodeReadyTimeout = timeout
+	}
+}
+func WithManagementClient(c ctrlclient.Client) MachineCreatorOption {
+	return func(n *MachineCreator) {
+		n.managementClient = c
 	}
 }

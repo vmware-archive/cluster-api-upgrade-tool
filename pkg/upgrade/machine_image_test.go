@@ -9,22 +9,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
 )
 
 func TestUpdateMachineSpecImage(t *testing.T) {
-	machine := &clusterapiv1alpha1.Machine{
-		Spec: clusterapiv1alpha1.MachineSpec{
-			ProviderSpec: clusterapiv1alpha1.ProviderSpec{
-				Value: &runtime.RawExtension{
-					Raw: []byte(`{"foo":{"bar": "baz"}}`),
-				},
+	machine := &clusterv1.Machine{
+		Spec: clusterv1.MachineSpec{
+			InfrastructureRef: corev1.ObjectReference{
+				Name: "foo",
 			},
 		},
 	}
 
-	err := updateMachineSpecImage(&machine.Spec, "providerSpec.value.foo.bar", "abcd1234")
+	err := updateMachineSpecImage(&machine.Spec, "infrastructureRef.name", "bar")
 	require.NoError(t, err)
-	assert.Equal(t, []byte(`{"foo":{"bar":"abcd1234"}}`), machine.Spec.ProviderSpec.Value.Raw)
+	assert.Equal(t, "bar", machine.Spec.InfrastructureRef.Name)
 }

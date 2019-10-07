@@ -4,6 +4,7 @@
 package upgrade_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -11,7 +12,10 @@ import (
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/upgrade"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterapiv1alpha1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 type log struct{}
@@ -24,14 +28,14 @@ func (l *log) Info(msg string, keysAndValues ...interface{})             {}
 func (l *log) Enabled() bool                                             { return false }
 
 type client struct {
-	machine *clusterapiv1alpha1.Machine
+	machine *clusterv1.Machine
 	nodes   *v1.NodeList
 }
 
-func (m *client) Create(machine *clusterapiv1alpha1.Machine) (*clusterapiv1alpha1.Machine, error) {
+func (m *client) Create(machine *clusterv1.Machine) (*clusterv1.Machine, error) {
 	return m.machine, nil
 }
-func (m *client) Get(string, metav1.GetOptions) (*clusterapiv1alpha1.Machine, error) {
+func (m *client) Get(namespace, name string) (*clusterv1.Machine, error) {
 	return m.machine, nil
 }
 func (m *client) List(options metav1.ListOptions) (*v1.NodeList, error) {
@@ -46,24 +50,45 @@ func (p *pclient) Get(string, metav1.GetOptions) (*v1.Pod, error) {
 	return p.pod, nil
 }
 
+type fakeClient struct {
+	ctrlclient.Client
+	providerID string
+}
+
+func (b fakeClient) Get(ctx context.Context, key ctrlclient.ObjectKey, obj runtime.Object) error {
+	machine := obj.(*clusterv1.Machine)
+
+	err := b.Client.Get(ctx, key, machine)
+	if err != nil {
+		return err
+	}
+
+	machine.Spec.ProviderID = &b.providerID
+	return nil
+}
+
 func TestNewMachine(t *testing.T) {
-	providerID := "localhost:////my-machine-identifier"
+	scheme := runtime.NewScheme()
+	scheme.AddKnownTypes(
+		clusterv1.GroupVersion,
+		&clusterv1.Machine{},
+	)
+	fake := fakeClient{
+		Client:     fake.NewFakeClientWithScheme(scheme),
+		providerID: "localhost:////my-machine-identifier",
+	}
+
 	mc := upgrade.NewMachineCreator(
+		upgrade.WithManagementClient(fake),
 		upgrade.WithLogger(&log{}),
-		upgrade.WithMachineCreator(&client{
-			machine: &clusterapiv1alpha1.Machine{},
-		}),
-		upgrade.WithMachineGetter(&client{
-			machine: &clusterapiv1alpha1.Machine{
-				Spec: clusterapiv1alpha1.MachineSpec{
-					ProviderID: &providerID,
-				},
-			},
-		}),
 		upgrade.WithNodeLister(&client{
 			nodes: &v1.NodeList{
 				Items: []v1.Node{
-					{Spec: v1.NodeSpec{ProviderID: "some-other-machine"}},
+					{
+						Spec: v1.NodeSpec{
+							ProviderID: "localhost:///some-other-machine",
+						},
+					},
 					{
 						Spec: v1.NodeSpec{
 							ProviderID: "localhost:///my-local-zone/my-machine-identifier",
@@ -108,12 +133,12 @@ func TestNewMachine(t *testing.T) {
 		upgrade.WithNodeReadyTimeout(10*time.Second),
 		upgrade.WithProviderIDTimeout(5*time.Second),
 	)
-	machineToReplace := &clusterapiv1alpha1.Machine{
+	machineToReplace := &clusterv1.Machine{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "testmachine-one",
+			Name: "testmachine-one-replace",
 		},
 	}
-	out, node, err := mc.NewMachine(machineToReplace)
+	out, node, err := mc.NewMachine("test", "testmachine-one-two", machineToReplace)
 	if err != nil {
 		t.Fatalf("%+v", err)
 	}

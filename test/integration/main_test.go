@@ -1,5 +1,9 @@
 package main
 
+// Leaving this as an integration test artifact.
+// Tests need to be changed to pass against v1alpha2 cluster-api flow.
+
+/*
 import (
 	"bytes"
 	"encoding/base64"
@@ -461,3 +465,4 @@ func kubeconfigPath(clusterName string) string {
 	home := os.Getenv("HOME")
 	return fmt.Sprintf("%s/.kube/kind-config-%s", home, clusterName)
 }
+*/
