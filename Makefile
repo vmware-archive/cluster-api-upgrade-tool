@@ -47,15 +47,13 @@ ifdef TESTCASE
 override TEST_ARGS = -run $(TESTCASE)
 endif
 
-# TODO(ncdc): move main_test.go to test/integration/... and make sure it has an -integration tag so we can just do
-# go test ./... for the test target.
 .PHONY: test
 test:  ## Run unit tests
-	go test ./pkg/...
+	go test ./...
 
 .PHONY: integration-test
 integration-test: $(CAPDCTL) ## Run integration tests
-	go test -count=1 -v -timeout=20m $(TEST_ARGS) .
+	go test -tags integration -count=1 -v -timeout=20m $(TEST_ARGS) ./test/integration
 
 # Build capdctl
 $(CAPDCTL): $(TOOLS_DIR)/go.mod ## Build capdctl

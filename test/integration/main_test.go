@@ -1,4 +1,6 @@
-package main
+// +build integration
+
+package integration
 
 // Leaving this as an integration test artifact.
 // Tests need to be changed to pass against v1alpha2 cluster-api flow.
