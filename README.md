@@ -16,17 +16,17 @@ supports full lifecycle management of both control planes and worker nodes, we p
 
 ## Try it out
 
-Build: Run "go build" from the home directory of this project.
+Build: Run `make bin` from the root directory of this project.
 
-Run the generated binary against an existing cluster.
+Run `bin/cluster-api-upgrade-tool` against an existing cluster.
 
 Example:
 
 ````
-./cluster-api-upgrade-tool --kubeconfig <Path to your management cluster kubeconfig file> \
+./bin/cluster-api-upgrade-tool \
+  --kubeconfig <Path to your management cluster kubeconfig file> \
   --cluster-namespace <Target cluster namespace> \
-  --cluster-name <Name of your target cluster> \
-  --kubeconfig-secret <Name of kubeconfig secret> \
+  --cluster-name <Target cluster name> \
   --kubernetes-version <Desired kubernetes version> \
   --scope control-plane
 ````
@@ -40,10 +40,6 @@ Example:
   * `set=controlplane`
 * Control plane is comprised of individual Machines
 * Worker nodes are from MachineDeployments
-
-### Build & Run
-
-go build
 
 ## Documentation
 

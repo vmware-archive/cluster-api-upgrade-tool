@@ -31,48 +31,13 @@ type ManagementClusterConfig struct {
 
 // TargetClusterConfig are all the necessary configs of the Kubernetes cluster being upgraded.
 type TargetClusterConfig struct {
-	Namespace    string        `json:"namespace"`
-	Name         string        `json:"name"`
-	CAKeyPair    KeyPairConfig `json:"caKeyPair"`
-	UpgradeScope string        `json:"scope"`
+	Namespace    string `json:"namespace"`
+	Name         string `json:"name"`
+	UpgradeScope string `json:"scope"`
 }
 
 func (t *TargetClusterConfig) UpgradeScopes() []string {
 	return []string{ControlPlaneScope, MachineDeploymentScope}
-}
-
-// KeyPairConfig is something
-type KeyPairConfig struct {
-	SecretRef           string `json:"secretRef,omitempty"`
-	ClusterField        string `json:"clusterField,omitempty"`
-	KubeconfigSecretRef string `json:"kubeconfigSecretRef,omitempty"`
-
-	// APIEndpoint is a URL to a kube-apiserver.
-	// This entry is used only if SecretRef or ClusterField is set.
-	// APIEndpoint is ignored if KubeconfigSecretRef is set.
-	APIEndpoint string `json:"apiEndpoint"`
-}
-
-func (k KeyPairConfig) validate() error {
-	if k.SecretRef != "" && k.ClusterField != "" {
-		return errors.New("cannot set both --ca-secret and --ca-field")
-	}
-	if k.SecretRef != "" && k.KubeconfigSecretRef != "" {
-		return errors.New("cannot set both --ca-secret and --kubeconfig-secret-ref")
-	}
-	if k.ClusterField != "" && k.KubeconfigSecretRef != "" {
-		return errors.New("cannot set both --ca-field and --kubeconfig-secret-ref")
-	}
-	if k.SecretRef == "" && k.ClusterField == "" && k.KubeconfigSecretRef == "" {
-		return errors.New("must set one of [--ca-secret, --ca-field, or --kubeconfig-secret-ref]")
-	}
-	if k.SecretRef != "" && k.APIEndpoint == "" {
-		return errors.New("must set --api-endpoint with --ca-secret")
-	}
-	if k.ClusterField != "" && k.APIEndpoint == "" {
-		return errors.New("must set --api-endpoint with --ca-field")
-	}
-	return nil
 }
 
 // MachineUpdateConfig contains the configuration of the machine desired.
@@ -89,10 +54,6 @@ type ImageUpdateConfig struct {
 
 // ValidateArgs validates the configuration passed in and returns the first validation error encountered.
 func ValidateArgs(config Config) error {
-	if err := config.TargetCluster.CAKeyPair.validate(); err != nil {
-		return err
-	}
-
 	validUpgradeScope := false
 	for _, scope := range config.TargetCluster.UpgradeScopes() {
 		if config.TargetCluster.UpgradeScope == scope {

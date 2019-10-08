@@ -18,10 +18,6 @@ func TestValidArgs(t *testing.T) {
 			name: "simple",
 			cfg: upgrade.Config{
 				TargetCluster: upgrade.TargetClusterConfig{
-					CAKeyPair: upgrade.KeyPairConfig{
-						SecretRef:   "test value",
-						APIEndpoint: "another test value",
-					},
 					UpgradeScope: upgrade.ControlPlaneScope,
 				},
 				KubernetesVersion: "v1.12.1",
@@ -51,66 +47,10 @@ func TestInvalidArgs(t *testing.T) {
 			cfg:  upgrade.Config{},
 		},
 		{
-			name: "secret ref and cluster field defined",
-			cfg: upgrade.Config{
-				TargetCluster: upgrade.TargetClusterConfig{
-					CAKeyPair: upgrade.KeyPairConfig{
-						SecretRef:    "some-ref",
-						ClusterField: "some.field",
-					},
-				},
-			},
-		},
-		{
-			name: "secret ref and kubeconfig secret ref defined",
-			cfg: upgrade.Config{
-				TargetCluster: upgrade.TargetClusterConfig{
-					CAKeyPair: upgrade.KeyPairConfig{
-						SecretRef:           "some-ref",
-						KubeconfigSecretRef: "some-other-ref",
-					},
-				},
-			},
-		},
-		{
-			name: "kubeconfig secret ref and ca field defined",
-			cfg: upgrade.Config{
-				TargetCluster: upgrade.TargetClusterConfig{
-					CAKeyPair: upgrade.KeyPairConfig{
-						KubeconfigSecretRef: "some-ref",
-						ClusterField:        "some.field",
-					},
-				},
-			},
-		},
-		{
-			name: "secret ref and no APIEndpoint",
-			cfg: upgrade.Config{
-				TargetCluster: upgrade.TargetClusterConfig{
-					CAKeyPair: upgrade.KeyPairConfig{
-						SecretRef: "some-ref",
-					},
-				},
-			},
-		},
-		{
-			name: "ca field and no APIEndpoint",
-			cfg: upgrade.Config{
-				TargetCluster: upgrade.TargetClusterConfig{
-					CAKeyPair: upgrade.KeyPairConfig{
-						ClusterField: "some.field",
-					},
-				},
-			},
-		},
-		{
 			name: "invalid cluster upgrade scope",
 			cfg: upgrade.Config{
 				TargetCluster: upgrade.TargetClusterConfig{
 					UpgradeScope: "some-invalid-upgrade-scope",
-					CAKeyPair: upgrade.KeyPairConfig{
-						KubeconfigSecretRef: "some-ref",
-					},
 				},
 			},
 		},
@@ -120,9 +60,6 @@ func TestInvalidArgs(t *testing.T) {
 				KubernetesVersion: "some-bad-version",
 				TargetCluster: upgrade.TargetClusterConfig{
 					UpgradeScope: upgrade.ControlPlaneScope,
-					CAKeyPair: upgrade.KeyPairConfig{
-						KubeconfigSecretRef: "some-ref",
-					},
 				},
 			},
 		},
