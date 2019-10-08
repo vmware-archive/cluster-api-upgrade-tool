@@ -67,6 +67,20 @@ func main() {
 	root.Flags().StringVar(&upgradeConfig.UpgradeID, "upgrade-id", "",
 		"Unique identifier used to resume a partial upgrade (optional)")
 
+	root.Flags().StringVar(
+		&upgradeConfig.MachineDeployment.Name,
+		"machine-deployment-name",
+		"",
+		"Name of a single machine deployment to upgrade",
+	)
+
+	root.Flags().StringVar(
+		&upgradeConfig.MachineDeployment.LabelSelector,
+		"machine-deployment-selector",
+		"",
+		"Label selector used to find machine deployments to upgrade",
+	)
+
 	if err := root.Execute(); err != nil {
 		// Print a stack trace, if possible. We may end up with the error message printed twice,
 		// but the stack trace can be invaluable, so we'll accept this for the time being.
