@@ -14,9 +14,11 @@ export GOPROXY
 export GO111MODULE=on
 
 TOOLS_DIR := hack/tools
+TOOLS_BIN_DIR := $(TOOLS_DIR)/bin
 BIN_DIR := bin
-CAPDCTL_BIN := bin/capdctl
-CAPDCTL := $(TOOLS_DIR)/$(CAPDCTL_BIN)
+
+CAPDCTL := $(TOOLS_BIN_DIR)/capdctl
+GOLANGCI_LINT := $(TOOLS_BIN_DIR)/golangci-lint
 
 
 ## --------------------------------------
@@ -34,6 +36,21 @@ help:  ## Display this help
 .PHONY: bin
 bin: ## Build binary.
 	go build -o $(BIN_DIR)/cluster-api-upgrade-tool .
+
+$(GOLANGCI_LINT): $(TOOLS_DIR)/go.mod # Build golangci-lint from tools folder.
+	cd $(TOOLS_DIR); go build -tags=tools -o $(BIN_DIR)/golangci-lint github.com/golangci/golangci-lint/cmd/golangci-lint
+
+
+## --------------------------------------
+## Linting
+## --------------------------------------
+
+.PHONY: lint
+lint: $(GOLANGCI_LINT) ## Lint codebase
+	$(GOLANGCI_LINT) run -v
+
+lint-full: $(GOLANGCI_LINT) ## Run slower linters to detect possible issues
+	$(GOLANGCI_LINT) run -v --fast=false
 
 
 ## --------------------------------------
