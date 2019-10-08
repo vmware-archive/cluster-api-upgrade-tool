@@ -50,14 +50,6 @@ func main() {
 		"The name of target cluster (required)")
 	root.MarkFlagRequired("cluster-name")
 
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.SecretRef, "ca-secret", "", "TODO")
-
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.ClusterField, "ca-field",
-		"", "The CA field in provider manifests, 'spec.providerSpec.value.caKeyPair' for the AWS provider (optional)")
-
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.KubeconfigSecretRef, "kubeconfig-secret", "",
-		"The name of the secret the kubeconfig is stored in. Assumed to be in the same namespace as the cluster object.")
-
 	root.Flags().StringVar(&upgradeConfig.KubernetesVersion, "kubernetes-version", "",
 		"Desired kubernetes version to upgrade to (required)")
 	root.MarkFlagRequired("kubernetes-version")
@@ -65,9 +57,6 @@ func main() {
 	root.Flags().StringVar(&upgradeConfig.TargetCluster.UpgradeScope, "scope", "",
 		"Scope of upgrade - [control-plane | machine-deployment] (required)")
 	root.MarkFlagRequired("scope")
-
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.CAKeyPair.APIEndpoint, "api-endpoint",
-		"", "Target cluster's API endpoint and port. For example: https://example.com:6443. Required with --ca-secret OR --ca-field. Ignored with --kubeconfig-secret-ref.")
 
 	root.Flags().StringVar(&upgradeConfig.MachineUpdates.Image.ID, "image-id",
 		"", "The provider-specific image identifier to use when booting a machine (optional)")

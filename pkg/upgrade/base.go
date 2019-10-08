@@ -17,9 +17,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	bootstrapv1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/api/v1alpha2"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
 	"sigs.k8s.io/cluster-api/controllers/noderefutil"
+	"sigs.k8s.io/cluster-api/util/kubeconfig"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -54,10 +56,17 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	scheme := runtime.NewScheme()
-	bootstrapv1.AddToScheme(scheme)
-	clusterv1.AddToScheme(scheme)
-	v1.AddToScheme(scheme)
+	if err := bootstrapv1.AddToScheme(scheme); err != nil {
+		return nil, errors.Wrap(err, "error adding bootstrap api to scheme")
+	}
+	if err := clusterv1.AddToScheme(scheme); err != nil {
+		return nil, errors.Wrap(err, "error adding cluster api to scheme")
+	}
+	if err := v1.AddToScheme(scheme); err != nil {
+		return nil, errors.Wrap(err, "error adding kubernetes api to scheme")
+	}
 
 	log.Info("Creating management cluster client")
 	ctrlRuntimeClient, err := ctrlclient.New(managementRestConfig, ctrlclient.Options{Scheme: scheme})
@@ -72,26 +81,14 @@ func newBase(log logr.Logger, config Config) (*base, error) {
 		return nil, errors.WithStack(err)
 	}
 
-	log.Info("Creating management kubernetes client")
-	managementKubernetesClient, err := kubernetes.NewForConfig(managementRestConfig)
+	kc, err := kubeconfig.FromSecret(ctrlRuntimeClient, cluster)
 	if err != nil {
-		return nil, errors.Wrap(err, "error creating management kubernetes client")
+		return nil, errors.Wrap(err, "error retrieving cluster kubeconfig secret")
 	}
-
-	var targetRestConfig *rest.Config
-	secretClient := managementKubernetesClient.CoreV1().Secrets(cluster.GetNamespace())
-	// CAKeyPair should have been validated, but if not this is defining an order for us
-	if config.TargetCluster.CAKeyPair.KubeconfigSecretRef != "" {
-		targetRestConfig, err = NewRestConfigFromKubeconfigSecretRef(secretClient, config.TargetCluster.CAKeyPair.KubeconfigSecretRef)
-	} else if config.TargetCluster.CAKeyPair.SecretRef != "" {
-		targetRestConfig, err = NewRestConfigFromCASecretRef(secretClient, config.TargetCluster.CAKeyPair.SecretRef, cluster.GetName(), config.TargetCluster.CAKeyPair.APIEndpoint)
-	} else if config.TargetCluster.CAKeyPair.ClusterField != "" {
-		targetRestConfig, err = NewRestConfigFromCAClusterField(cluster, config.TargetCluster.CAKeyPair.ClusterField, config.TargetCluster.CAKeyPair.APIEndpoint)
-	}
+	targetRestConfig, err := clientcmd.RESTConfigFromKubeConfig(kc)
 	if err != nil {
 		return nil, err
 	}
-
 	if targetRestConfig == nil {
 		return nil, errors.New("could not get a kubeconfig for your target cluster")
 	}
