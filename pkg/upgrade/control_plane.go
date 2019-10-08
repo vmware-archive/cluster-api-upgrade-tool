@@ -487,20 +487,6 @@ func (u *ControlPlaneUpgrader) applyAnnotation(m *clusterv1.Machine) error {
 	return nil
 }
 
-// retry the given function for the given number of times with the given interval
-func (u *ControlPlaneUpgrader) retry(node *v1.Node, count int, interval time.Duration, fn func(hp *v1.Node) error) error {
-	if err := fn(node); err != nil {
-		if count--; count > 0 {
-			time.Sleep(interval)
-			return u.retry(node, count, interval, fn)
-		}
-
-		return err
-	}
-
-	return nil
-}
-
 func (u *ControlPlaneUpgrader) deleteMachine(machine *clusterv1.Machine) error {
 	u.log.Info("Deleting existing machine", "namespace", machine.Namespace, "name", machine.Name)
 
