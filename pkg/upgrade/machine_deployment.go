@@ -8,12 +8,16 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type MachineDeploymentUpgrader struct {
 	*base
+	name     string
+	selector labels.Selector
 }
 
 func NewMachineDeploymentUpgrader(log logr.Logger, config Config) (*MachineDeploymentUpgrader, error) {
@@ -22,15 +26,62 @@ func NewMachineDeploymentUpgrader(log logr.Logger, config Config) (*MachineDeplo
 		return nil, errors.Wrap(err, "error initializing upgrader")
 	}
 
+	var selector labels.Selector
+	if config.MachineDeployment.LabelSelector != "" {
+		// Step 1: parse the user-specified label selector
+		selector, err = labels.Parse(config.MachineDeployment.LabelSelector)
+		if err != nil {
+			return nil, errors.Wrapf(err, "error parsing machine deployment label selector %q", config.MachineDeployment.LabelSelector)
+		}
+
+		// Step 2: add the cluster name to the label selector to avoid the possibility of selecting machine deployments
+		// that belong to clusters other than the one the user specified.
+		r, err := labels.NewRequirement(clusterv1.MachineClusterLabelName, selection.Equals, []string{b.clusterName})
+		if err != nil {
+			return nil, errors.Wrap(err, "error adding cluster name to label selector")
+		}
+
+		selector = selector.Add(*r)
+	}
+
 	return &MachineDeploymentUpgrader{
-		base: b,
+		base:     b,
+		name:     config.MachineDeployment.Name,
+		selector: selector,
 	}, nil
 }
 
 func (u *MachineDeploymentUpgrader) Upgrade() error {
-	machineDeployments, err := u.listMachineDeployments()
-	if err != nil {
-		return err
+	var (
+		machineDeployments *clusterv1.MachineDeploymentList
+		err                error
+	)
+
+	if u.name != "" {
+		key := ctrlclient.ObjectKey{
+			Namespace: u.clusterNamespace,
+			Name:      u.name,
+		}
+
+		var machineDeployment clusterv1.MachineDeployment
+
+		if err := u.managerClusterClient.Get(context.TODO(), key, &machineDeployment); err != nil {
+			return errors.Wrapf(err, "error getting machine deployment %q", u.name)
+		}
+
+		if machineDeployment.Labels == nil {
+			return errors.Errorf("machine deployment is missing the %q label", clusterv1.MachineClusterLabelName)
+		}
+		if machineDeploymentCluster := machineDeployment.Labels[clusterv1.MachineClusterLabelName]; machineDeploymentCluster != u.clusterName {
+			return errors.Errorf("machine deployment belongs to a different cluster (%q)", machineDeploymentCluster)
+		}
+
+		machineDeployments = &clusterv1.MachineDeploymentList{Items: []clusterv1.MachineDeployment{machineDeployment}}
+	} else {
+		machineDeployments, err = u.listMachineDeployments()
+		if err != nil {
+			return err
+		}
 	}
 
 	if machineDeployments == nil || len(machineDeployments.Items) == 0 {
@@ -41,14 +92,23 @@ func (u *MachineDeploymentUpgrader) Upgrade() error {
 }
 
 func (u *MachineDeploymentUpgrader) listMachineDeployments() (*clusterv1.MachineDeploymentList, error) {
-	u.log.Info("Listing machine deployments")
-
 	listOptions := []ctrlclient.ListOption{
-		ctrlclient.MatchingLabels{
-			clusterv1.MachineClusterLabelName: u.clusterName,
-		},
 		ctrlclient.InNamespace(u.clusterNamespace),
 	}
+
+	var selectorText string
+
+	if u.selector == nil {
+		matchingLabels := ctrlclient.MatchingLabels{clusterv1.MachineClusterLabelName: u.clusterName}
+		selectorText = labels.SelectorFromSet(labels.Set(matchingLabels)).String()
+		listOptions = append(listOptions, matchingLabels)
+	} else {
+		selectorText = u.selector.String()
+		listOptions = append(listOptions, ctrlclient.MatchingLabelsSelector{Selector: u.selector})
+	}
+
+	u.log.Info("Listing machine deployments", "label-selector", selectorText)
+
 	list := &clusterv1.MachineDeploymentList{}
 	err := u.managerClusterClient.List(context.TODO(), list, listOptions...)
 	if err != nil {

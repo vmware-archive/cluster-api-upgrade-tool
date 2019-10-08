@@ -15,11 +15,12 @@ const (
 
 // Config contains all the configurations necessary to upgrade a Kubernetes cluster.
 type Config struct {
-	ManagementCluster ManagementClusterConfig `json:"managementCluster"`
-	TargetCluster     TargetClusterConfig     `json:"targetCluster"`
-	MachineUpdates    MachineUpdateConfig     `json:"machineUpdates"`
-	KubernetesVersion string                  `json:"kubernetesVersion"`
-	UpgradeID         string                  `json:"upgradeID"`
+	ManagementCluster ManagementClusterConfig       `json:"managementCluster"`
+	TargetCluster     TargetClusterConfig           `json:"targetCluster"`
+	MachineUpdates    MachineUpdateConfig           `json:"machineUpdates"`
+	KubernetesVersion string                        `json:"kubernetesVersion"`
+	UpgradeID         string                        `json:"upgradeID"`
+	MachineDeployment MachineDeploymentUpdateConfig `json:"machineDeployment"`
 }
 
 // ManagementClusterConfig is the Kubeconfig and relevant information to connect to the management cluster of the worker cluster being upgraded.
@@ -87,6 +88,12 @@ type ImageUpdateConfig struct {
 	Field string `json:"field"`
 }
 
+// MachineDeploymentUpdateConfig contains details for specifying which machine deployment(s) to upgrade.
+type MachineDeploymentUpdateConfig struct {
+	Name          string `json:"name"`
+	LabelSelector string `json:"labelSelector"`
+}
+
 // ValidateArgs validates the configuration passed in and returns the first validation error encountered.
 func ValidateArgs(config Config) error {
 	if err := config.TargetCluster.CAKeyPair.validate(); err != nil {
@@ -111,6 +118,10 @@ func ValidateArgs(config Config) error {
 	if (config.MachineUpdates.Image.ID == "" && config.MachineUpdates.Image.Field != "") ||
 		(config.MachineUpdates.Image.ID != "" && config.MachineUpdates.Image.Field == "") {
 		return errors.New("when specifying image id, image field is required (and vice versa)")
+	}
+
+	if config.MachineDeployment.Name != "" && config.MachineDeployment.LabelSelector != "" {
+		return errors.New("you may only set one of machine deployment name and label selector, but not both")
 	}
 
 	return nil
