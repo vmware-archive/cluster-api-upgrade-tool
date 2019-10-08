@@ -39,33 +39,77 @@ func main() {
 		SilenceUsage: true,
 	}
 
-	root.Flags().StringVar(&upgradeConfig.ManagementCluster.Kubeconfig, "kubeconfig",
-		"", "The kubeconfig path for the management cluster")
+	root.Flags().StringVar(
+		&upgradeConfig.ManagementCluster.Kubeconfig,
+		"kubeconfig",
+		"",
+		"The kubeconfig path for the management cluster",
+	)
 
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.Namespace,
-		"cluster-namespace", "", "The namespace of target cluster (required)")
-	root.MarkFlagRequired("cluster-namespace")
+	root.Flags().StringVar(
+		&upgradeConfig.TargetCluster.Namespace,
+		"cluster-namespace",
+		"",
+		"The namespace of target cluster (required)",
+	)
+	if err := root.MarkFlagRequired("cluster-namespace"); err != nil {
+		fmt.Printf("Unable to mark cluster-namespace as a required flag: %v\n", err)
+		os.Exit(1)
+	}
 
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.Name, "cluster-name", "",
-		"The name of target cluster (required)")
-	root.MarkFlagRequired("cluster-name")
+	root.Flags().StringVar(
+		&upgradeConfig.TargetCluster.Name,
+		"cluster-name",
+		"",
+		"The name of target cluster (required)",
+	)
+	if err := root.MarkFlagRequired("cluster-name"); err != nil {
+		fmt.Printf("Unable to mark cluster-name as a required flag: %v\n", err)
+		os.Exit(1)
+	}
 
-	root.Flags().StringVar(&upgradeConfig.KubernetesVersion, "kubernetes-version", "",
-		"Desired kubernetes version to upgrade to (required)")
-	root.MarkFlagRequired("kubernetes-version")
+	root.Flags().StringVar(
+		&upgradeConfig.KubernetesVersion,
+		"kubernetes-version",
+		"",
+		"Desired kubernetes version to upgrade to (required)",
+	)
+	if err := root.MarkFlagRequired("kubernetes-version"); err != nil {
+		fmt.Printf("Unable to mark kubernetes-version as a required flag: %v\n", err)
+		os.Exit(1)
+	}
 
-	root.Flags().StringVar(&upgradeConfig.TargetCluster.UpgradeScope, "scope", "",
-		"Scope of upgrade - [control-plane | machine-deployment] (required)")
-	root.MarkFlagRequired("scope")
+	root.Flags().StringVar(
+		&upgradeConfig.TargetCluster.UpgradeScope,
+		"scope",
+		"",
+		"Scope of upgrade - [control-plane | machine-deployment] (required)",
+	)
+	if err := root.MarkFlagRequired("scope"); err != nil {
+		fmt.Printf("Unable to mark scope as a required flag: %v\n", err)
+		os.Exit(1)
+	}
 
-	root.Flags().StringVar(&upgradeConfig.MachineUpdates.Image.ID, "image-id",
-		"", "The provider-specific image identifier to use when booting a machine (optional)")
+	root.Flags().StringVar(
+		&upgradeConfig.MachineUpdates.Image.ID,
+		"image-id",
+		"",
+		"The provider-specific image identifier to use when booting a machine (optional)",
+	)
 
-	root.Flags().StringVar(&upgradeConfig.MachineUpdates.Image.Field, "image-field",
-		"", "The image identifier field in provider manifests (optional)")
+	root.Flags().StringVar(
+		&upgradeConfig.MachineUpdates.Image.Field,
+		"image-field",
+		"",
+		"The image identifier field in provider manifests (optional)",
+	)
 
-	root.Flags().StringVar(&upgradeConfig.UpgradeID, "upgrade-id", "",
-		"Unique identifier used to resume a partial upgrade (optional)")
+	root.Flags().StringVar(
+		&upgradeConfig.UpgradeID,
+		"upgrade-id",
+		"",
+		"Unique identifier used to resume a partial upgrade (optional)",
+	)
 
 	root.Flags().StringVar(
 		&upgradeConfig.MachineDeployment.Name,
