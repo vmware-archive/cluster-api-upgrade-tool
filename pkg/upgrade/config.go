@@ -44,7 +44,6 @@ func (t *TargetClusterConfig) UpgradeScopes() []string {
 // MachineUpdateConfig contains the configuration of the machine desired.
 type MachineUpdateConfig struct {
 	Image        ImageUpdateConfig `json:"image,omitempty"`
-	MachineClass string            `json:"machineClass,omitempty"`
 }
 
 // ImageUpdateConfig is something
