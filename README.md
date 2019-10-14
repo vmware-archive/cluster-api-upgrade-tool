@@ -63,7 +63,7 @@ The following examples assume you have `$KUBECONFIG` set.
 
 ### Prerequisites
 
-* Cluster created using Cluster API v0.1.x / API version v1alpha2
+* Cluster created using Cluster API v0.2.x / API version v1alpha2
 * Nodes bootstrapped with kubeadm
 * Control plane Machine resources have the following labels:
   * `cluster.k8s.io/cluster-name=<cluster name>`
