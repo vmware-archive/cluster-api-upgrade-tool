@@ -20,30 +20,78 @@ Build: Run `make bin` from the root directory of this project.
 
 Run `bin/cluster-api-upgrade-tool` against an existing cluster.
 
-Example:
+The following examples assume you have `$KUBECONFIG` set.
 
-````
+
+### Control plane upgrade
+```
 ./bin/cluster-api-upgrade-tool \
-  --kubeconfig <Path to your management cluster kubeconfig file> \
   --cluster-namespace <Target cluster namespace> \
   --cluster-name <Target cluster name> \
   --kubernetes-version <Desired kubernetes version> \
   --scope control-plane
-````
+```
+
+### Worker upgrade - all MachineDeployments
+```
+./bin/cluster-api-upgrade-tool \
+  --cluster-namespace <Target cluster namespace> \
+  --cluster-name <Target cluster name> \
+  --kubernetes-version <Desired kubernetes version> \
+  --scope machine-deployment
+```
+
+### Worker upgrade - single MachineDeployment, by name
+```
+./bin/cluster-api-upgrade-tool \
+  --cluster-namespace <Target cluster namespace> \
+  --cluster-name <Target cluster name> \
+  --kubernetes-version <Desired kubernetes version> \
+  --scope machine-deployment \
+  --machine-deployment-name <Desired MachineDeployment name>
+```
+
+### Worker upgrade - multiple MachineDeployments, by label selector
+```
+./bin/cluster-api-upgrade-tool \
+  --cluster-namespace <Target cluster namespace> \
+  --cluster-name <Target cluster name> \
+  --kubernetes-version <Desired kubernetes version> \
+  --scope machine-deployment \
+  --machine-deployment-selector <Desired MachineDeployment label selector>
+```
 
 ### Prerequisites
 
-* Cluster created using Cluster API v0.1.x / API version v1alpha1
+* Cluster created using Cluster API v0.1.x / API version v1alpha2
 * Nodes bootstrapped with kubeadm
 * Control plane Machine resources have the following labels:
   * `cluster.k8s.io/cluster-name=<cluster name>`
-  * `set=controlplane`
+  * `cluster.x-k8s.io/control-plane=true`
 * Control plane is comprised of individual Machines
 * Worker nodes are from MachineDeployments
 
 ## Documentation
 
-TODO
+### Usage
+
+```
+Usage:
+  ./bin/cluster-api-upgrade-tool [flags]
+
+Flags:
+      --cluster-name string                  The name of target cluster (required)
+      --cluster-namespace string             The namespace of target cluster (required)
+  -h, --help                                 help for ./bin/cluster-api-upgrade-tool
+      --image-field string                   The image identifier field in provider manifests (optional)
+      --image-id string                      The provider-specific image identifier to use when booting a machine (optional)
+      --kubeconfig string                    The kubeconfig path for the management cluster
+      --kubernetes-version string            Desired kubernetes version to upgrade to (required)
+      --machine-deployment-name string       Name of a single machine deployment to upgrade
+      --machine-deployment-selector string   Label selector used to find machine deployments to upgrade
+      --scope string                         Scope of upgrade - [control-plane | machine-deployment] (required)
+      --upgrade-id string                    Unique identifier used to resume a partial upgrade (optional)
+```
 
 ## Contributing
 
