@@ -42,6 +42,9 @@ func NewMachineDeploymentUpgrader(log logr.Logger, config Config) (*MachineDeplo
 		(config.MachineUpdates.Image.ID != "" && config.MachineUpdates.Image.Field == "") {
 		return nil, errors.New("when specifying image id, image field is required (and vice versa)")
 	}
+	if !upgradeIDInputRegex.MatchString(config.UpgradeID) {
+		return nil, errors.New("upgrade ID must be a timestamp containing only digits")
+	}
 
 	var (
 		selector labels.Selector
@@ -170,7 +173,7 @@ func (u *MachineDeploymentUpgrader) listMachineDeployments() (*clusterv1.Machine
 func (u *MachineDeploymentUpgrader) upgradeMachineDeployments(list *clusterv1.MachineDeploymentList) error {
 	for _, machineDeployment := range list.Items {
 		// Skip any machineDeployments that already have this upgrade annotation id
-		if val, ok := machineDeployment.Spec.Template.Annotations[UpgradeIDAnnotationKey]; ok && val == u.upgradeID {
+		if val, ok := machineDeployment.Spec.Template.Annotations[AnnotationUpgradeID]; ok && val == u.upgradeID {
 			continue
 		}
 		if err := u.updateMachineDeployment(&machineDeployment); err != nil {
@@ -195,7 +198,7 @@ func (u *MachineDeploymentUpgrader) updateMachineDeployment(machineDeployment *c
 	if machineDeployment.Spec.Template.Annotations == nil {
 		machineDeployment.Spec.Template.Annotations = map[string]string{}
 	}
-	machineDeployment.Spec.Template.Annotations[UpgradeIDAnnotationKey] = u.upgradeID
+	machineDeployment.Spec.Template.Annotations[AnnotationUpgradeID] = u.upgradeID
 
 	if u.imageField != "" && u.imageID != "" {
 		if err := updateMachineSpecImage(&machineDeployment.Spec.Template.Spec, u.imageField, u.imageID); err != nil {
