@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 
 	v1 "k8s.io/api/core/v1"
@@ -134,5 +135,53 @@ metadata:
 
 	if strings.TrimSpace(expectedYaml) != strings.TrimSpace(string(updatedYaml)) {
 		t.Errorf("expected %s, got %s", expectedYaml, updatedYaml)
+	}
+}
+
+func TestGenerateMachineName(t *testing.T) {
+	maxNameLength := validation.DNS1123SubdomainMaxLength
+	upgradeID := "1234567890"
+	suffix := ".upgrade." + upgradeID
+	maxNameLengthWithoutTrimming := maxNameLength - len(suffix)
+
+	tests := []struct {
+		name         string
+		originalName string
+		expected     string
+	}{
+		{
+			name:         "short name",
+			originalName: "my-cluster",
+			expected:     "my-cluster" + suffix,
+		},
+		{
+			name:         "max length without trimming",
+			originalName: strings.Repeat("s", maxNameLengthWithoutTrimming),
+			expected:     strings.Repeat("s", maxNameLengthWithoutTrimming) + suffix,
+		},
+		{
+			name:         "trimming",
+			originalName: strings.Repeat("s", maxNameLength),
+			expected:     strings.Repeat("s", maxNameLengthWithoutTrimming) + suffix,
+		},
+		{
+			name:         "replace old upgrade id - short",
+			originalName: "my-cluster.upgrade.0000011111",
+			expected:     "my-cluster" + suffix,
+		},
+		{
+			name:         "replace old upgrade id - trimming",
+			originalName: strings.Repeat("s", maxNameLengthWithoutTrimming) + ".upgrade.0000011111",
+			expected:     strings.Repeat("s", maxNameLengthWithoutTrimming) + suffix,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := generateReplacementMachineName(tc.originalName, upgradeID)
+			if tc.expected != actual {
+				t.Errorf("expected %q (len %d), got %q (len %d)", tc.expected, len(tc.expected), actual, len(actual))
+			}
+		})
 	}
 }
