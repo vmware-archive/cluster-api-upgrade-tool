@@ -23,18 +23,14 @@ func newLogger() logr.Logger {
 }
 
 func main() {
+	var scope string
 	upgradeConfig := upgrade.Config{}
 
 	root := &cobra.Command{
 		Use:   os.Args[0],
 		Short: "Upgrades Kubernetes clusters created by Cluster API.",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			err := upgrade.ValidateArgs(upgradeConfig)
-			if err != nil {
-				return err
-			}
-
-			return upgradeCluster(upgradeConfig)
+			return upgradeCluster(scope, upgradeConfig)
 		},
 		SilenceUsage: true,
 	}
@@ -80,7 +76,7 @@ func main() {
 	}
 
 	root.Flags().StringVar(
-		&upgradeConfig.TargetCluster.UpgradeScope,
+		&scope,
 		"scope",
 		"",
 		"Scope of upgrade - [control-plane | machine-deployment] (required)",
@@ -137,20 +133,27 @@ type upgrader interface {
 	Upgrade() error
 }
 
-func upgradeCluster(config upgrade.Config) error {
+const (
+	controlPlaneScope      = "control-plane"
+	machineDeploymentScope = "machine-deployment"
+)
+
+func upgradeCluster(scope string, config upgrade.Config) error {
 	var (
 		log      = newLogger()
 		upgrader upgrader
 		err      error
 	)
 
-	switch config.TargetCluster.UpgradeScope {
-	case upgrade.ControlPlaneScope:
+	validScopes := []string{controlPlaneScope, machineDeploymentScope}
+
+	switch scope {
+	case controlPlaneScope:
 		upgrader, err = upgrade.NewControlPlaneUpgrader(log, config)
-	case upgrade.MachineDeploymentScope:
+	case machineDeploymentScope:
 		upgrader, err = upgrade.NewMachineDeploymentUpgrader(log, config)
 	default:
-		return errors.Errorf("invalid scope %q", config.TargetCluster.UpgradeScope)
+		return errors.Errorf("invalid upgrade scope, must be one of %v", validScopes)
 	}
 
 	if err != nil {

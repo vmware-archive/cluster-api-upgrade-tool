@@ -3,16 +3,6 @@
 
 package upgrade
 
-import (
-	"github.com/blang/semver"
-	"github.com/pkg/errors"
-)
-
-const (
-	ControlPlaneScope      = "control-plane"
-	MachineDeploymentScope = "machine-deployment"
-)
-
 // Config contains all the configurations necessary to upgrade a Kubernetes cluster.
 type Config struct {
 	ManagementCluster ManagementClusterConfig       `json:"managementCluster"`
@@ -32,18 +22,13 @@ type ManagementClusterConfig struct {
 
 // TargetClusterConfig are all the necessary configs of the Kubernetes cluster being upgraded.
 type TargetClusterConfig struct {
-	Namespace    string `json:"namespace"`
-	Name         string `json:"name"`
-	UpgradeScope string `json:"scope"`
-}
-
-func (t *TargetClusterConfig) UpgradeScopes() []string {
-	return []string{ControlPlaneScope, MachineDeploymentScope}
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
 }
 
 // MachineUpdateConfig contains the configuration of the machine desired.
 type MachineUpdateConfig struct {
-	Image        ImageUpdateConfig `json:"image,omitempty"`
+	Image ImageUpdateConfig `json:"image,omitempty"`
 }
 
 // ImageUpdateConfig is something
@@ -56,33 +41,4 @@ type ImageUpdateConfig struct {
 type MachineDeploymentUpdateConfig struct {
 	Name          string `json:"name"`
 	LabelSelector string `json:"labelSelector"`
-}
-
-// ValidateArgs validates the configuration passed in and returns the first validation error encountered.
-func ValidateArgs(config Config) error {
-	validUpgradeScope := false
-	for _, scope := range config.TargetCluster.UpgradeScopes() {
-		if config.TargetCluster.UpgradeScope == scope {
-			validUpgradeScope = true
-			break
-		}
-	}
-	if !validUpgradeScope {
-		return errors.Errorf("invalid upgrade scope, must be one of %v", config.TargetCluster.UpgradeScopes())
-	}
-
-	if _, err := semver.ParseTolerant(config.KubernetesVersion); err != nil {
-		return errors.Errorf("Invalid Kubernetes version: %q", config.KubernetesVersion)
-	}
-
-	if (config.MachineUpdates.Image.ID == "" && config.MachineUpdates.Image.Field != "") ||
-		(config.MachineUpdates.Image.ID != "" && config.MachineUpdates.Image.Field == "") {
-		return errors.New("when specifying image id, image field is required (and vice versa)")
-	}
-
-	if config.MachineDeployment.Name != "" && config.MachineDeployment.LabelSelector != "" {
-		return errors.New("you may only set one of machine deployment name and label selector, but not both")
-	}
-
-	return nil
 }

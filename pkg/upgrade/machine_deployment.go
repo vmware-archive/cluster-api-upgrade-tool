@@ -5,9 +5,13 @@ package upgrade
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	"github.com/blang/semver"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
+	"github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
@@ -15,18 +19,35 @@ import (
 )
 
 type MachineDeploymentUpgrader struct {
-	*base
-	name     string
-	selector labels.Selector
+	log                     logr.Logger
+	clusterNamespace        string
+	clusterName             string
+	name                    string
+	selector                labels.Selector
+	desiredVersion          semver.Version
+	imageField, imageID     string
+	upgradeID               string
+	managementClusterClient ctrlclient.Client
 }
 
 func NewMachineDeploymentUpgrader(log logr.Logger, config Config) (*MachineDeploymentUpgrader, error) {
-	b, err := newBase(log, config)
-	if err != nil {
-		return nil, errors.Wrap(err, "error initializing upgrader")
+	// Input validation
+	if config.KubernetesVersion == "" {
+		return nil, errors.New("kubernetes version is required")
+	}
+	if config.MachineDeployment.Name != "" && config.MachineDeployment.LabelSelector != "" {
+		return nil, errors.New("you may only specify one of machine deployment name and label selector, but not both")
+	}
+	if (config.MachineUpdates.Image.ID == "" && config.MachineUpdates.Image.Field != "") ||
+		(config.MachineUpdates.Image.ID != "" && config.MachineUpdates.Image.Field == "") {
+		return nil, errors.New("when specifying image id, image field is required (and vice versa)")
 	}
 
-	var selector labels.Selector
+	var (
+		selector labels.Selector
+		err      error
+	)
+
 	if config.MachineDeployment.LabelSelector != "" {
 		// Step 1: parse the user-specified label selector
 		selector, err = labels.Parse(config.MachineDeployment.LabelSelector)
@@ -36,7 +57,7 @@ func NewMachineDeploymentUpgrader(log logr.Logger, config Config) (*MachineDeplo
 
 		// Step 2: add the cluster name to the label selector to avoid the possibility of selecting machine deployments
 		// that belong to clusters other than the one the user specified.
-		r, err := labels.NewRequirement(clusterv1.MachineClusterLabelName, selection.Equals, []string{b.clusterName})
+		r, err := labels.NewRequirement(clusterv1.MachineClusterLabelName, selection.Equals, []string{config.TargetCluster.Name})
 		if err != nil {
 			return nil, errors.Wrap(err, "error adding cluster name to label selector")
 		}
@@ -44,10 +65,38 @@ func NewMachineDeploymentUpgrader(log logr.Logger, config Config) (*MachineDeplo
 		selector = selector.Add(*r)
 	}
 
+	desiredVersion, err := semver.ParseTolerant(config.KubernetesVersion)
+	if err != nil {
+		return nil, errors.Wrapf(err, "error parsing kubernetes version %q", config.KubernetesVersion)
+	}
+
+	upgradeID := config.UpgradeID
+	if upgradeID == "" {
+		upgradeID = fmt.Sprintf("%d", time.Now().Unix())
+	}
+
+	infoMessage := fmt.Sprintf("Rerun with `--upgrade-id=%s` if this upgrade fails midway and you want to retry", config.UpgradeID)
+	log.Info(infoMessage)
+
+	managementClusterClient, err := kubernetes.NewClient(
+		kubernetes.KubeConfigPath(config.ManagementCluster.Kubeconfig),
+		kubernetes.KubeConfigContext(config.ManagementCluster.Context),
+	)
+	if err != nil {
+		return nil, errors.Wrap(err, "error creating management cluster client")
+	}
+
 	return &MachineDeploymentUpgrader{
-		base:     b,
-		name:     config.MachineDeployment.Name,
-		selector: selector,
+		log:                     log,
+		clusterNamespace:        config.TargetCluster.Namespace,
+		clusterName:             config.TargetCluster.Name,
+		name:                    config.MachineDeployment.Name,
+		selector:                selector,
+		desiredVersion:          desiredVersion,
+		imageField:              config.MachineUpdates.Image.Field,
+		imageID:                 config.MachineUpdates.Image.ID,
+		upgradeID:               upgradeID,
+		managementClusterClient: managementClusterClient,
 	}, nil
 }
 
@@ -65,7 +114,7 @@ func (u *MachineDeploymentUpgrader) Upgrade() error {
 
 		var machineDeployment clusterv1.MachineDeployment
 
-		if err := u.managerClusterClient.Get(context.TODO(), key, &machineDeployment); err != nil {
+		if err := u.managementClusterClient.Get(context.TODO(), key, &machineDeployment); err != nil {
 			return errors.Wrapf(err, "error getting machine deployment %q", u.name)
 		}
 
@@ -110,7 +159,7 @@ func (u *MachineDeploymentUpgrader) listMachineDeployments() (*clusterv1.Machine
 	u.log.Info("Listing machine deployments", "label-selector", selectorText)
 
 	list := &clusterv1.MachineDeploymentList{}
-	err := u.managerClusterClient.List(context.TODO(), list, listOptions...)
+	err := u.managementClusterClient.List(context.TODO(), list, listOptions...)
 	if err != nil {
 		return nil, errors.Wrap(err, "error listing machines")
 	}
@@ -155,7 +204,7 @@ func (u *MachineDeploymentUpgrader) updateMachineDeployment(machineDeployment *c
 	}
 
 	// Get the updated version in json
-	if err := u.managerClusterClient.Patch(context.TODO(), machineDeployment, patch); err != nil {
+	if err := u.managementClusterClient.Patch(context.TODO(), machineDeployment, patch); err != nil {
 		return errors.Wrapf(err, "error patching machinedeployment %s", machineDeployment.Name)
 	}
 

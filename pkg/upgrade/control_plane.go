@@ -11,23 +11,26 @@ import (
 	"strings"
 	"time"
 
-	"sigs.k8s.io/yaml"
-
 	"github.com/blang/semver"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
-	"github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
+	kubernetes2 "github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	bootstrapv1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/api/v1alpha2"
 	kubeadmv1beta1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/kubeadm/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
 	"sigs.k8s.io/cluster-api/controllers/external"
 	"sigs.k8s.io/cluster-api/controllers/noderefutil"
+	"sigs.k8s.io/cluster-api/util/kubeconfig"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -39,19 +42,94 @@ const (
 	UpgradeIDAnnotationKey = "upgrade-id"
 )
 
+var unsetVersion semver.Version
+
 type ControlPlaneUpgrader struct {
-	*base
-	oldNodeToEtcdMember map[string]string
+	log                     logr.Logger
+	userVersion             semver.Version
+	desiredVersion          semver.Version
+	clusterNamespace        string
+	clusterName             string
+	managementClusterClient ctrlclient.Client
+	targetRestConfig        *rest.Config
+	targetKubernetesClient  kubernetes.Interface
+	providerIDsToNodes      map[string]*v1.Node
+	imageField, imageID     string
+	upgradeID               string
+	oldNodeToEtcdMember     map[string]string
 }
 
 func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgrader, error) {
-	b, err := newBase(log, config)
-	if err != nil {
-		return nil, errors.Wrap(err, "error initializing upgrader")
+	// Validations
+	if config.KubernetesVersion == "" {
+		return nil, errors.New("kubernetes version is required")
+	}
+	if (config.MachineUpdates.Image.ID == "" && config.MachineUpdates.Image.Field != "") ||
+		(config.MachineUpdates.Image.ID != "" && config.MachineUpdates.Image.Field == "") {
+		return nil, errors.New("when specifying image id, image field is required (and vice versa)")
 	}
 
+	var userVersion, desiredVersion semver.Version
+
+	v, err := semver.ParseTolerant(config.KubernetesVersion)
+	if err != nil {
+		return nil, errors.Wrapf(err, "error parsing kubernetes version %q", config.KubernetesVersion)
+	}
+	userVersion = v
+	desiredVersion = v
+
+	managementClusterClient, err := kubernetes2.NewClient(
+		kubernetes2.KubeConfigPath(config.ManagementCluster.Kubeconfig),
+		kubernetes2.KubeConfigContext(config.ManagementCluster.Context),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Info("Retrieving cluster from management cluster", "cluster-namespace", config.TargetCluster.Namespace, "cluster-name", config.TargetCluster.Name)
+	cluster := &clusterv1.Cluster{}
+	err = managementClusterClient.Get(context.TODO(), ctrlclient.ObjectKey{Namespace: config.TargetCluster.Namespace, Name: config.TargetCluster.Name}, cluster)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	kc, err := kubeconfig.FromSecret(managementClusterClient, cluster)
+	if err != nil {
+		return nil, errors.Wrap(err, "error retrieving cluster kubeconfig secret")
+	}
+	targetRestConfig, err := clientcmd.RESTConfigFromKubeConfig(kc)
+	if err != nil {
+		return nil, err
+	}
+	if targetRestConfig == nil {
+		return nil, errors.New("could not get a kubeconfig for your target cluster")
+	}
+
+	log.Info("Creating target kubernetes client")
+	targetKubernetesClient, err := kubernetes.NewForConfig(targetRestConfig)
+	if err != nil {
+		return nil, errors.Wrap(err, "error creating target cluster client")
+	}
+
+	if config.UpgradeID == "" {
+		config.UpgradeID = fmt.Sprintf("%d", time.Now().Unix())
+	}
+
+	infoMessage := fmt.Sprintf("Rerun with `--upgrade-id=%s` if this upgrade fails midway and you want to retry", config.UpgradeID)
+	log.Info(infoMessage)
+
 	return &ControlPlaneUpgrader{
-		base: b,
+		log:                     log,
+		userVersion:             userVersion,
+		desiredVersion:          desiredVersion,
+		clusterNamespace:        config.TargetCluster.Namespace,
+		clusterName:             config.TargetCluster.Name,
+		managementClusterClient: managementClusterClient,
+		targetRestConfig:        targetRestConfig,
+		targetKubernetesClient:  targetKubernetesClient,
+		imageField:              config.MachineUpdates.Image.Field,
+		imageID:                 config.MachineUpdates.Image.ID,
+		upgradeID:               config.UpgradeID,
 	}, nil
 }
 
@@ -307,7 +385,7 @@ func (u *ControlPlaneUpgrader) updateCRDs(machines *clusterv1.MachineList) error
 	}
 
 	machineCreator := NewMachineCreator(
-		WithManagementClient(u.managerClusterClient),
+		WithManagementClient(u.managementClusterClient),
 		WithNodeLister(u.targetKubernetesClient.CoreV1().Nodes()),
 		WithPodGetter(u.targetKubernetesClient.CoreV1().Pods("kube-system")),
 		WithMachineOptions(mo),
@@ -368,7 +446,7 @@ func (u *ControlPlaneUpgrader) updateSecrets(bootstrap *bootstrapv1.KubeadmConfi
 
 	for _, secretName := range secretNames {
 		secret := &v1.Secret{}
-		if err := u.managerClusterClient.Get(context.TODO(), ctrlclient.ObjectKey{Name: secretName, Namespace: u.clusterNamespace}, secret); err != nil {
+		if err := u.managementClusterClient.Get(context.TODO(), ctrlclient.ObjectKey{Name: secretName, Namespace: u.clusterNamespace}, secret); err != nil {
 			return errors.WithStack(err)
 		}
 		patch := ctrlclient.MergeFrom(secret.DeepCopyObject())
@@ -382,7 +460,7 @@ func (u *ControlPlaneUpgrader) updateSecrets(bootstrap *bootstrapv1.KubeadmConfi
 			},
 		})
 
-		if err := u.managerClusterClient.Patch(context.TODO(), secret.DeepCopyObject(), patch); err != nil {
+		if err := u.managementClusterClient.Patch(context.TODO(), secret.DeepCopyObject(), patch); err != nil {
 			return errors.WithStack(err)
 		}
 	}
@@ -396,7 +474,7 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(name string, machine *clust
 	if machine.Spec.Bootstrap.ConfigRef.Namespace == "" {
 		machine.Spec.Bootstrap.ConfigRef.Namespace = u.clusterNamespace
 	}
-	err := u.managerClusterClient.Get(context.TODO(), ctrlclient.ObjectKey{Name: machine.Spec.Bootstrap.ConfigRef.Name, Namespace: machine.Spec.Bootstrap.ConfigRef.Namespace}, bootstrap)
+	err := u.managementClusterClient.Get(context.TODO(), ctrlclient.ObjectKey{Name: machine.Spec.Bootstrap.ConfigRef.Name, Namespace: machine.Spec.Bootstrap.ConfigRef.Namespace}, bootstrap)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -427,7 +505,7 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(name string, machine *clust
 	// new node. It will always be joining an existing control plane.
 	bootstrap.Spec.InitConfiguration = nil
 
-	err = u.managerClusterClient.Create(context.TODO(), bootstrap)
+	err = u.managementClusterClient.Create(context.TODO(), bootstrap)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -450,7 +528,7 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(name string, machin
 	if machine.Spec.InfrastructureRef.Namespace == "" {
 		machine.Spec.InfrastructureRef.Namespace = u.clusterNamespace
 	}
-	infraRef, err := external.Get(u.managerClusterClient, &machine.Spec.InfrastructureRef, machine.Namespace)
+	infraRef, err := external.Get(u.managementClusterClient, &machine.Spec.InfrastructureRef, machine.Namespace)
 	if err != nil {
 		return err
 	}
@@ -463,7 +541,7 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(name string, machin
 	machine.Spec.InfrastructureRef.Name = name
 
 	// create infrastructure object
-	err = u.managerClusterClient.Create(context.TODO(), infraRef)
+	err = u.managementClusterClient.Create(context.TODO(), infraRef)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -479,7 +557,7 @@ func (u *ControlPlaneUpgrader) applyAnnotation(m *clusterv1.Machine) error {
 	}
 	m.Annotations[UpgradeIDAnnotationKey] = u.upgradeID
 
-	err := u.managerClusterClient.Patch(context.TODO(), m, patch)
+	err := u.managementClusterClient.Patch(context.TODO(), m, patch)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -490,7 +568,7 @@ func (u *ControlPlaneUpgrader) applyAnnotation(m *clusterv1.Machine) error {
 func (u *ControlPlaneUpgrader) deleteMachine(machine *clusterv1.Machine) error {
 	u.log.Info("Deleting existing machine", "namespace", machine.Namespace, "name", machine.Name)
 
-	err := u.managerClusterClient.Delete(context.TODO(), machine)
+	err := u.managementClusterClient.Delete(context.TODO(), machine)
 	return errors.WithStack(err)
 }
 
@@ -517,7 +595,7 @@ func (u *ControlPlaneUpgrader) listMachines() (*clusterv1.MachineList, error) {
 	machines := &clusterv1.MachineList{}
 
 	u.log.Info("Listing machines", "labelSelector", labels)
-	err := u.managerClusterClient.List(context.TODO(), machines, listOptions...)
+	err := u.managementClusterClient.List(context.TODO(), machines, listOptions...)
 	if err != nil {
 		return nil, errors.Wrap(err, "error listing machines")
 	}
@@ -640,7 +718,7 @@ func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, a
 
 	fullArgs = append(fullArgs, args...)
 
-	opts := kubernetes.PodExecInput{
+	opts := kubernetes2.PodExecInput{
 		RestConfig:       u.targetRestConfig,
 		KubernetesClient: u.targetKubernetesClient,
 		Namespace:        pod.Namespace,
@@ -654,7 +732,7 @@ func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, a
 
 	opts.Command = append(opts.Command, args...)
 
-	stdout, stderr, err := kubernetes.PodExec(ctx, opts)
+	stdout, stderr, err := kubernetes2.PodExec(ctx, opts)
 
 	// TODO figure out how we want logs to show up in this library
 	u.log.Info(fmt.Sprintf("etcdctl stdout: %s", stdout))
@@ -699,4 +777,41 @@ func updateKubeadmKubernetesVersion(original *v1.ConfigMap, version string) (*v1
 	cm.Data["ClusterConfiguration"] = string(updated)
 
 	return cm, nil
+}
+
+func (u *ControlPlaneUpgrader) GetNodeFromProviderID(providerID string) *v1.Node {
+	node, ok := u.providerIDsToNodes[providerID]
+	if ok {
+		return node
+	}
+	return nil
+}
+
+// UpdateProviderIDsToNodes retrieves a map that pairs a providerID to the node by listing all Nodes
+// providerID : Node
+func (u *ControlPlaneUpgrader) UpdateProviderIDsToNodes() error {
+	u.log.Info("Updating provider IDs to nodes")
+	nodes, err := u.targetKubernetesClient.CoreV1().Nodes().List(metav1.ListOptions{})
+	if err != nil {
+		return errors.Wrap(err, "error listing nodes")
+	}
+
+	pairs := make(map[string]*v1.Node)
+	for i := range nodes.Items {
+		node := nodes.Items[i]
+		id := ""
+		providerID, err := noderefutil.NewProviderID(node.Spec.ProviderID)
+		if err == nil {
+			id = providerID.ID()
+		} else {
+			u.log.Error(err, "failed to parse provider id", "id", node.Spec.ProviderID)
+			// unable to parse provider ID with whitelist of provider ID formats. Use original provider ID
+			id = node.Spec.ProviderID
+		}
+		pairs[id] = &node
+	}
+
+	u.providerIDsToNodes = pairs
+
+	return nil
 }
