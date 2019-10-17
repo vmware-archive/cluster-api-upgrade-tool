@@ -7,11 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/blang/semver"
+	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	kubernetes2 "github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
@@ -20,6 +22,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -64,6 +67,8 @@ type ControlPlaneUpgrader struct {
 	upgradeID               string
 	oldNodeToEtcdMember     map[string]string
 	secretsUpdated          bool
+	infrastructurePatch     jsonpatch.Patch
+	bootstrapPatch          jsonpatch.Patch
 }
 
 func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgrader, error) {
@@ -130,6 +135,20 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 	infoMessage := fmt.Sprintf("Rerun with `--upgrade-id=%s` if this upgrade fails midway and you want to retry", config.UpgradeID)
 	log.Info(infoMessage)
 
+	var infrastructurePatch, bootstrapPatch jsonpatch.Patch
+	if len(config.Patches.Infrastructure) > 0 {
+		infrastructurePatch, err = jsonpatch.DecodePatch([]byte(config.Patches.Infrastructure))
+		if err != nil {
+			return nil, errors.Wrap(err, "error decoding infrastructure patch")
+		}
+	}
+	if len(config.Patches.Bootstrap) > 0 {
+		bootstrapPatch, err = jsonpatch.DecodePatch([]byte(config.Patches.Bootstrap))
+		if err != nil {
+			return nil, errors.Wrap(err, "error decoding bootstrap patch")
+		}
+	}
+
 	return &ControlPlaneUpgrader{
 		log:                     log,
 		userVersion:             userVersion,
@@ -140,6 +159,8 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 		targetRestConfig:        targetRestConfig,
 		targetKubernetesClient:  targetKubernetesClient,
 		upgradeID:               config.UpgradeID,
+		infrastructurePatch:     infrastructurePatch,
+		bootstrapPatch:          bootstrapPatch,
 	}, nil
 }
 
@@ -648,7 +669,17 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 	// new node. It will always be joining an existing control plane.
 	bootstrap.Spec.InitConfiguration = nil
 
-	err = u.managementClusterClient.Create(context.TODO(), bootstrap)
+	// Convert to a runtime.Object in case we need to patch, so we don't have to type assert after patching
+	var toCreate runtime.Object = bootstrap
+
+	if u.bootstrapPatch != nil {
+		toCreate, err = patchRuntimeObject(bootstrap, u.bootstrapPatch)
+		if err != nil {
+			return errors.Wrap(err, "error patching bootstrap resource")
+		}
+	}
+
+	err = u.managementClusterClient.Create(context.TODO(), toCreate)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -713,6 +744,29 @@ func (u *ControlPlaneUpgrader) resourceExists(ref v1.ObjectReference) (bool, err
 	return true, nil
 }
 
+func patchRuntimeObject(obj runtime.Object, patch jsonpatch.Patch) (runtime.Object, error) {
+	j, err := json.Marshal(obj)
+	if err != nil {
+		return nil, errors.Wrap(err, "error converting to JSON")
+	}
+
+	patched, err := patch.Apply(j)
+	if err != nil {
+		return nil, errors.Wrap(err, "error applying patches")
+	}
+
+	// Create a new instance of the same type as obj
+	t := reflect.TypeOf(obj)
+	v := reflect.New(t.Elem()).Interface()
+
+	// Unmarshal into that new instance
+	if err := json.Unmarshal(patched, v); err != nil {
+		return nil, errors.Wrap(err, "error converting from patched JSON")
+	}
+
+	return v.(runtime.Object), nil
+}
+
 func (u *ControlPlaneUpgrader) updateInfrastructureReference(replacementKey ctrlclient.ObjectKey, ref v1.ObjectReference) error {
 	// Step 1: return early if we've already created the replacement infra resource
 	replacementRef := v1.ObjectReference{
@@ -732,21 +786,29 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(replacementKey ctrl
 	// Step 2: if we're here, we need to create it
 
 	// get original infrastructure object
-	infraRef, err := external.Get(u.managementClusterClient, &ref, u.clusterNamespace)
+	infra, err := external.Get(u.managementClusterClient, &ref, u.clusterNamespace)
 	if err != nil {
 		return err
 	}
 
 	// prep the replacement
-	infraRef.SetResourceVersion("")
-	infraRef.SetName(replacementKey.Name)
-	infraRef.SetOwnerReferences(nil)
-	unstructured.RemoveNestedField(infraRef.UnstructuredContent(), "spec", "providerID")
+	infra.SetResourceVersion("")
+	infra.SetName(replacementKey.Name)
+	infra.SetOwnerReferences(nil)
+	unstructured.RemoveNestedField(infra.UnstructuredContent(), "spec", "providerID")
 
-	// point the machine at the replacement
+	// Convert to a runtime.Object in case we need to patch, so we don't have to type assert after patching
+	var toCreate runtime.Object = infra
+
+	if u.infrastructurePatch != nil {
+		toCreate, err = patchRuntimeObject(infra, u.infrastructurePatch)
+		if err != nil {
+			return errors.Wrap(err, "error patching infrastructure resource")
+		}
+	}
 
 	// create the replacement infrastructure object
-	err = u.managementClusterClient.Create(context.TODO(), infraRef)
+	err = u.managementClusterClient.Create(context.TODO(), toCreate)
 	if err != nil {
 		return errors.WithStack(err)
 	}

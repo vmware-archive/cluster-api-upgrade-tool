@@ -4,6 +4,7 @@ go 1.12
 
 require (
 	github.com/blang/semver v3.5.0+incompatible
+	github.com/evanphx/json-patch v4.5.0+incompatible
 	github.com/go-logr/logr v0.1.0
 	github.com/pkg/errors v0.8.1
 	github.com/sirupsen/logrus v1.2.0
