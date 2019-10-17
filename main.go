@@ -8,10 +8,12 @@ import (
 	"os"
 
 	"github.com/go-logr/logr"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/logging"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/upgrade"
+	"k8s.io/apimachinery/pkg/util/yaml"
 )
 
 func newLogger() logr.Logger {
@@ -22,12 +24,30 @@ func newLogger() logr.Logger {
 }
 
 func main() {
+	configFile := ""
 	upgradeConfig := upgrade.Config{}
 
 	root := &cobra.Command{
 		Use:   os.Args[0],
 		Short: "Upgrades Kubernetes clusters created by Cluster API.",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if configFile != "" {
+				reader, err := os.Open(configFile)
+				if err != nil {
+					return errors.Wrap(err, "error opening config file")
+				}
+				defer reader.Close()
+
+				const bufferSize = 512
+				decoder := yaml.NewYAMLOrJSONDecoder(reader, bufferSize)
+				if err := decoder.Decode(&upgradeConfig); err != nil {
+					return errors.Wrap(err, "error parsing config file")
+				}
+
+				// TODO either merge in other flag values after decoding, or raise an error if the user specifies
+				// --config with any other flags
+			}
+
 			upgrader, err := upgrade.NewControlPlaneUpgrader(newLogger(), upgradeConfig)
 			if err != nil {
 				return err
@@ -38,6 +58,13 @@ func main() {
 		},
 		SilenceUsage: true,
 	}
+
+	root.Flags().StringVar(
+		&configFile,
+		"config",
+		"",
+		"Path to a config file in yaml or json format",
+	)
 
 	root.Flags().StringVar(
 		&upgradeConfig.ManagementCluster.Kubeconfig,
@@ -52,10 +79,6 @@ func main() {
 		"",
 		"The namespace of target cluster (required)",
 	)
-	if err := root.MarkFlagRequired("cluster-namespace"); err != nil {
-		fmt.Printf("Unable to mark cluster-namespace as a required flag: %v\n", err)
-		os.Exit(1)
-	}
 
 	root.Flags().StringVar(
 		&upgradeConfig.TargetCluster.Name,
@@ -63,10 +86,6 @@ func main() {
 		"",
 		"The name of target cluster (required)",
 	)
-	if err := root.MarkFlagRequired("cluster-name"); err != nil {
-		fmt.Printf("Unable to mark cluster-name as a required flag: %v\n", err)
-		os.Exit(1)
-	}
 
 	root.Flags().StringVar(
 		&upgradeConfig.KubernetesVersion,
@@ -74,10 +93,6 @@ func main() {
 		"",
 		"Desired kubernetes version to upgrade to (required)",
 	)
-	if err := root.MarkFlagRequired("kubernetes-version"); err != nil {
-		fmt.Printf("Unable to mark kubernetes-version as a required flag: %v\n", err)
-		os.Exit(1)
-	}
 
 	root.Flags().StringVar(
 		&upgradeConfig.UpgradeID,

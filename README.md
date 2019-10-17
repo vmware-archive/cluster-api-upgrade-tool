@@ -23,13 +23,34 @@ Run `bin/cluster-api-upgrade-tool` against an existing cluster.
 The following examples assume you have `$KUBECONFIG` set.
 
 
-### Control plane upgrade
+### Specify options with flags
+
 ```
 ./bin/cluster-api-upgrade-tool \
   --cluster-namespace <Target cluster namespace> \
   --cluster-name <Target cluster name> \
-  --kubernetes-version <Desired kubernetes version> \
+  --kubernetes-version <Desired kubernetes version>
 ```
+
+### Specify options with a config file
+
+Given the following `my-file` config file:
+
+```yaml
+targetCluster:
+  namespace: example
+  name: cluster1
+kubernetesVersion: v1.15.3
+upgradeID: 1234
+```
+
+Run an upgrade with the following command:
+
+```
+./bin/cluster-api-upgrade-tool --config my-file
+```
+
+Both JSON and YAML formats are supported.
 
 ### Prerequisites
 
@@ -49,12 +70,13 @@ Usage:
   ./bin/cluster-api-upgrade-tool [flags]
 
 Flags:
-      --cluster-name string                  The name of target cluster (required)
-      --cluster-namespace string             The namespace of target cluster (required)
-  -h, --help                                 help for ./bin/cluster-api-upgrade-tool
-      --kubeconfig string                    The kubeconfig path for the management cluster
-      --kubernetes-version string            Desired kubernetes version to upgrade to (required)
-      --upgrade-id string                    Unique identifier used to resume a partial upgrade (optional)
+      --cluster-name string         The name of target cluster (required)
+      --cluster-namespace string    The namespace of target cluster (required)
+      --config string               Path to a config file in yaml or json format
+  -h, --help                        help for ./bin/cluster-api-upgrade-tool
+      --kubeconfig string           The kubeconfig path for the management cluster
+      --kubernetes-version string   Desired kubernetes version to upgrade to (required)
+      --upgrade-id string           Unique identifier used to resume a partial upgrade (optional)
 ```
 
 ## Contributing
