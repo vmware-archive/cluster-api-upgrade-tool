@@ -68,6 +68,12 @@ type ControlPlaneUpgrader struct {
 
 func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgrader, error) {
 	// Validations
+	if config.TargetCluster.Namespace == "" {
+		return nil, errors.New("target cluster namespace is required")
+	}
+	if config.TargetCluster.Name == "" {
+		return nil, errors.New("target cluster name is required")
+	}
 	if config.KubernetesVersion == "" {
 		return nil, errors.New("kubernetes version is required")
 	}
