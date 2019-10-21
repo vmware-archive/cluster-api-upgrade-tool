@@ -3,11 +3,6 @@
 
 package upgrade
 
-import "regexp"
-
-var upgradeIDNameSuffixRegex = regexp.MustCompile(`upgrade\.[0-9]+$`)
-var upgradeIDInputRegex = regexp.MustCompile("^[0-9]+$")
-
 // Config contains all the configurations necessary to upgrade a Kubernetes cluster.
 type Config struct {
 	ManagementCluster ManagementClusterConfig `json:"managementCluster"`

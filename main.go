@@ -98,7 +98,7 @@ func main() {
 		&upgradeConfig.UpgradeID,
 		"upgrade-id",
 		"",
-		"Unique identifier used to resume a partial upgrade (optional)",
+		"Unique identifier used to resume a partial upgrade (required)",
 	)
 
 	root.Flags().StringVar(

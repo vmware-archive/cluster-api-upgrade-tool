@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -82,8 +83,13 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 	if config.KubernetesVersion == "" {
 		return nil, errors.New("kubernetes version is required")
 	}
-	if !upgradeIDInputRegex.MatchString(config.UpgradeID) {
-		return nil, errors.New("upgrade ID must be a timestamp containing only digits")
+	if config.UpgradeID == "" {
+		return nil, errors.New("upgrade ID is required")
+	}
+	// Kubernetes resource names must be DNS1123 subdomains. Because the upgrade ID becomes part of the name for new
+	// machines, infra machines, and KubeadmConfigs, we use the same validation here.
+	if errs := validation.IsDNS1123Subdomain(config.UpgradeID); len(errs) > 0 {
+		return nil, errors.New("upgrade ID: " + strings.Join(errs, ", "))
 	}
 
 	var userVersion, desiredVersion semver.Version
@@ -126,10 +132,6 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 	targetKubernetesClient, err := kubernetes.NewForConfig(targetRestConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating target cluster client")
-	}
-
-	if config.UpgradeID == "" {
-		config.UpgradeID = fmt.Sprintf("%d", time.Now().Unix())
 	}
 
 	infoMessage := fmt.Sprintf("Rerun with `--upgrade-id=%s` if this upgrade fails midway and you want to retry", config.UpgradeID)
@@ -593,6 +595,9 @@ func (u *ControlPlaneUpgrader) updateMachines(machines []*clusterv1.Machine) err
 func upgradeSuffix(upgradeID string) string {
 	return ".upgrade." + upgradeID
 }
+
+// Match 'upgrade.' followed by one or more characters until end of input.
+var upgradeIDNameSuffixRegex = regexp.MustCompile(`upgrade\..+$`)
 
 // generateReplacementMachineName takes the original machine name and appends the upgrade suffix to it, removing any previous
 // suffix. If the generated name would be longer than the maximum allowed name length, generateReplacementMachineName truncates
