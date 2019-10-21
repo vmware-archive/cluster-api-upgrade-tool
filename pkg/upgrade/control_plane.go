@@ -61,7 +61,6 @@ type ControlPlaneUpgrader struct {
 	targetRestConfig        *rest.Config
 	targetKubernetesClient  kubernetes.Interface
 	providerIDsToNodes      map[string]*v1.Node
-	imageField, imageID     string
 	upgradeID               string
 	oldNodeToEtcdMember     map[string]string
 	secretsUpdated          bool
@@ -71,10 +70,6 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 	// Validations
 	if config.KubernetesVersion == "" {
 		return nil, errors.New("kubernetes version is required")
-	}
-	if (config.MachineUpdates.Image.ID == "" && config.MachineUpdates.Image.Field != "") ||
-		(config.MachineUpdates.Image.ID != "" && config.MachineUpdates.Image.Field == "") {
-		return nil, errors.New("when specifying image id, image field is required (and vice versa)")
 	}
 	if !upgradeIDInputRegex.MatchString(config.UpgradeID) {
 		return nil, errors.New("upgrade ID must be a timestamp containing only digits")
@@ -138,8 +133,6 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 		managementClusterClient: managementClusterClient,
 		targetRestConfig:        targetRestConfig,
 		targetKubernetesClient:  targetKubernetesClient,
-		imageField:              config.MachineUpdates.Image.Field,
-		imageID:                 config.MachineUpdates.Image.ID,
 		upgradeID:               config.UpgradeID,
 	}, nil
 }
@@ -678,7 +671,7 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 		}
 
 		secret.SetOwnerReferences([]metav1.OwnerReference{
-			metav1.OwnerReference{
+			{
 				APIVersion: bootstrapv1.GroupVersion.String(),
 				Kind:       "KubeadmConfig",
 				Name:       bootstrap.Name,
