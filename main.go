@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/go-logr/logr"
+	"github.com/imdario/mergo"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -25,12 +26,16 @@ func newLogger() logr.Logger {
 
 func main() {
 	configFile := ""
-	upgradeConfig := upgrade.Config{}
+	configFromFlags := upgrade.Config{}
 
 	root := &cobra.Command{
 		Use:   os.Args[0],
 		Short: "Upgrades Kubernetes clusters created by Cluster API.",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			// Default the final config to coming from flags
+			finalConfig := configFromFlags
+
+			// Process the config file, if applicable
 			if configFile != "" {
 				reader, err := os.Open(configFile)
 				if err != nil {
@@ -38,17 +43,23 @@ func main() {
 				}
 				defer reader.Close()
 
+				var configFromFile upgrade.Config
 				const bufferSize = 512
 				decoder := yaml.NewYAMLOrJSONDecoder(reader, bufferSize)
-				if err := decoder.Decode(&upgradeConfig); err != nil {
+				if err := decoder.Decode(&configFromFile); err != nil {
 					return errors.Wrap(err, "error parsing config file")
 				}
 
-				// TODO either merge in other flag values after decoding, or raise an error if the user specifies
-				// --config with any other flags
+				// Merge command line flags on top
+				if err := mergo.Merge(&configFromFile, configFromFlags, mergo.WithOverride); err != nil {
+					return errors.Wrap(err, "error merging flags with config file")
+				}
+
+				// Update our final config to be the merged copy
+				finalConfig = configFromFile
 			}
 
-			upgrader, err := upgrade.NewControlPlaneUpgrader(newLogger(), upgradeConfig)
+			upgrader, err := upgrade.NewControlPlaneUpgrader(newLogger(), finalConfig)
 			if err != nil {
 				return err
 			}
@@ -67,49 +78,49 @@ func main() {
 	)
 
 	root.Flags().StringVar(
-		&upgradeConfig.ManagementCluster.Kubeconfig,
+		&configFromFlags.ManagementCluster.Kubeconfig,
 		"kubeconfig",
 		"",
 		"The kubeconfig path for the management cluster",
 	)
 
 	root.Flags().StringVar(
-		&upgradeConfig.TargetCluster.Namespace,
+		&configFromFlags.TargetCluster.Namespace,
 		"cluster-namespace",
 		"",
 		"The namespace of target cluster (required)",
 	)
 
 	root.Flags().StringVar(
-		&upgradeConfig.TargetCluster.Name,
+		&configFromFlags.TargetCluster.Name,
 		"cluster-name",
 		"",
 		"The name of target cluster (required)",
 	)
 
 	root.Flags().StringVar(
-		&upgradeConfig.KubernetesVersion,
+		&configFromFlags.KubernetesVersion,
 		"kubernetes-version",
 		"",
 		"Desired kubernetes version to upgrade to (required)",
 	)
 
 	root.Flags().StringVar(
-		&upgradeConfig.UpgradeID,
+		&configFromFlags.UpgradeID,
 		"upgrade-id",
 		"",
 		"Unique identifier used to resume a partial upgrade (optional)",
 	)
 
 	root.Flags().StringVar(
-		&upgradeConfig.Patches.Infrastructure,
+		&configFromFlags.Patches.Infrastructure,
 		"infrastructure-patches",
 		"",
 		"JSON patch expression of patches to apply to the machine's infrastructure resource (optional)",
 	)
 
 	root.Flags().StringVar(
-		&upgradeConfig.Patches.Bootstrap,
+		&configFromFlags.Patches.Bootstrap,
 		"bootstrap-patches",
 		"",
 		"JSON patch expression of patches to apply to the machine's bootstrap resource (optional)",

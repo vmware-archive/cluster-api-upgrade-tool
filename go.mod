@@ -6,6 +6,7 @@ require (
 	github.com/blang/semver v3.5.0+incompatible
 	github.com/evanphx/json-patch v4.5.0+incompatible
 	github.com/go-logr/logr v0.1.0
+	github.com/imdario/mergo v0.3.8
 	github.com/pkg/errors v0.8.1
 	github.com/sirupsen/logrus v1.2.0
 	github.com/spf13/cobra v0.0.3
