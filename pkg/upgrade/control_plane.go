@@ -52,11 +52,8 @@ const (
 	AnnotationUpgradeID = annotationPrefix + "id"
 )
 
-var unsetVersion semver.Version
-
 type ControlPlaneUpgrader struct {
 	log                     logr.Logger
-	userVersion             semver.Version
 	desiredVersion          semver.Version
 	clusterNamespace        string
 	clusterName             string
@@ -86,14 +83,10 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 		return nil, errors.New("upgrade ID must be a timestamp containing only digits")
 	}
 
-	var userVersion, desiredVersion semver.Version
-
-	v, err := semver.ParseTolerant(config.KubernetesVersion)
+	parsedVersion, err := semver.ParseTolerant(config.KubernetesVersion)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error parsing kubernetes version %q", config.KubernetesVersion)
 	}
-	userVersion = v
-	desiredVersion = v
 
 	managementClusterClient, err := kubernetes2.NewClient(
 		kubernetes2.KubeConfigPath(config.ManagementCluster.Kubeconfig),
@@ -151,8 +144,7 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 
 	return &ControlPlaneUpgrader{
 		log:                     log,
-		userVersion:             userVersion,
-		desiredVersion:          desiredVersion,
+		desiredVersion:          parsedVersion,
 		clusterNamespace:        config.TargetCluster.Namespace,
 		clusterName:             config.TargetCluster.Name,
 		managementClusterClient: managementClusterClient,
@@ -175,26 +167,14 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 		return errors.New("Found 0 control plane machines")
 	}
 
-	min, max, err := u.minMaxControlPlaneVersions(machines)
+	err = u.updateKubeletConfigMapIfNeeded(u.desiredVersion)
 	if err != nil {
-		return errors.Wrap(err, "error determining current control plane versions")
+		return err
 	}
 
-	// default the desired version if the user did not specify it
-	if unsetVersion.EQ(u.userVersion) {
-		u.desiredVersion = max
-	}
-
-	if isMinorVersionUpgrade(min, u.desiredVersion) {
-		err = u.updateKubeletConfigMapIfNeeded(u.desiredVersion)
-		if err != nil {
-			return err
-		}
-
-		err = u.updateKubeletRbacIfNeeded(u.desiredVersion)
-		if err != nil {
-			return err
-		}
+	err = u.updateKubeletRbacIfNeeded(u.desiredVersion)
+	if err != nil {
+		return err
 	}
 
 	u.log.Info("Checking etcd health")
@@ -246,59 +226,42 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	return nil
 }
 
-func isMinorVersionUpgrade(base, update semver.Version) bool {
-	return base.Major == update.Major && base.Minor < update.Minor
-}
-
-func (u *ControlPlaneUpgrader) minMaxControlPlaneVersions(machines []*clusterv1.Machine) (semver.Version, semver.Version, error) {
-	var min, max semver.Version
-
-	for _, machine := range machines {
-		if machine.Spec.Version == nil {
-			return semver.Version{}, semver.Version{}, errors.Errorf("nil control plane version for machine %s/%s", machine.Namespace, machine.Name)
-		}
-		if *machine.Spec.Version != "" {
-			machineVersion, err := semver.ParseTolerant(*machine.Spec.Version)
-			if err != nil {
-				return min, max, errors.Wrapf(err, "invalid control plane version %q for machine %s/%s", *machine.Spec.Version, machine.Namespace, machine.Name)
-			}
-			if min.EQ(unsetVersion) || machineVersion.LT(min) {
-				min = machineVersion
-			}
-			if max.EQ(unsetVersion) || machineVersion.GT(max) {
-				max = machineVersion
-			}
-		}
-	}
-
-	return min, max, nil
-}
-
 func (u *ControlPlaneUpgrader) updateKubeletConfigMapIfNeeded(version semver.Version) error {
 	// Check if the desired configmap already exists
 	desiredKubeletConfigMapName := fmt.Sprintf("kubelet-config-%d.%d", version.Major, version.Minor)
+
+	log := u.log.WithValues("name", desiredKubeletConfigMapName)
+
+	log.Info("Checking for existence of kubelet configmap")
 	_, err := u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Get(desiredKubeletConfigMapName, metav1.GetOptions{})
 	if err == nil {
-		u.log.Info("kubelet configmap already exists", "configMapName", desiredKubeletConfigMapName)
+		log.Info("kubelet configmap already exists")
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
-		return errors.Wrapf(err, "error determining if configmap %s exists", desiredKubeletConfigMapName)
+		return errors.Wrapf(err, "error determining if kubelet configmap %s exists", desiredKubeletConfigMapName)
 	}
 
 	// If we get here, we have to make the configmap
+	log.Info("Need to create kubelet configmap")
+
 	previousMinorVersionKubeletConfigMapName := fmt.Sprintf("kubelet-config-%d.%d", version.Major, version.Minor-1)
+
+	log.Info("Retrieving kubelet configmap for previous minor version", "previous-name", previousMinorVersionKubeletConfigMapName)
 	cm, err := u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Get(previousMinorVersionKubeletConfigMapName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return errors.Errorf("unable to find current kubelet configmap %s", previousMinorVersionKubeletConfigMapName)
+		return errors.Errorf("unable to find kubelet configmap %s", previousMinorVersionKubeletConfigMapName)
 	}
+
 	cm.Name = desiredKubeletConfigMapName
 	cm.ResourceVersion = ""
 
+	log.Info("Creating kubelet configmap as a copy from the previous minor version")
 	_, err = u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Create(cm)
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "error creating configmap %s", desiredKubeletConfigMapName)
 	}
+	log.Info("kubelet configmap creation succeeded")
 
 	return nil
 }
@@ -307,6 +270,9 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 	majorMinor := fmt.Sprintf("%d.%d", version.Major, version.Minor)
 	roleName := fmt.Sprintf("kubeadm:kubelet-config-%s", majorMinor)
 
+	log := u.log.WithValues("role-name", "kube-system/"+roleName)
+
+	log.Info("Looking up role")
 	_, err := u.targetKubernetesClient.RbacV1().Roles("kube-system").Get(roleName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		newRole := &rbacv1.Role{
@@ -324,14 +290,17 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 			},
 		}
 
+		log.Info("Need to create role")
 		_, err := u.targetKubernetesClient.RbacV1().Roles("kube-system").Create(newRole)
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return errors.Wrapf(err, "error creating role %s", roleName)
 		}
+		log.Info("Role creation succeeded")
 	} else if err != nil {
 		return errors.Wrapf(err, "error determining if role %s exists", roleName)
 	}
 
+	log.Info("Looking up role binding")
 	_, err = u.targetKubernetesClient.RbacV1().RoleBindings("kube-system").Get(roleName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		newRoleBinding := &rbacv1.RoleBinding{
@@ -358,10 +327,12 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 			},
 		}
 
+		log.Info("Need to create role binding")
 		_, err = u.targetKubernetesClient.RbacV1().RoleBindings("kube-system").Create(newRoleBinding)
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return errors.Wrapf(err, "error creating rolebinding %s", roleName)
 		}
+		log.Info("Role binding creation succeeded")
 	} else if err != nil {
 		return errors.Wrapf(err, "error determining if rolebinding %s exists", roleName)
 	}
