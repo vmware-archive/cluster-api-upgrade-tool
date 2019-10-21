@@ -52,11 +52,8 @@ const (
 	AnnotationUpgradeID = annotationPrefix + "id"
 )
 
-var unsetVersion semver.Version
-
 type ControlPlaneUpgrader struct {
 	log                     logr.Logger
-	userVersion             semver.Version
 	desiredVersion          semver.Version
 	clusterNamespace        string
 	clusterName             string
@@ -86,14 +83,10 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 		return nil, errors.New("upgrade ID must be a timestamp containing only digits")
 	}
 
-	var userVersion, desiredVersion semver.Version
-
-	v, err := semver.ParseTolerant(config.KubernetesVersion)
+	parsedVersion, err := semver.ParseTolerant(config.KubernetesVersion)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error parsing kubernetes version %q", config.KubernetesVersion)
 	}
-	userVersion = v
-	desiredVersion = v
 
 	managementClusterClient, err := kubernetes2.NewClient(
 		kubernetes2.KubeConfigPath(config.ManagementCluster.Kubeconfig),
@@ -151,8 +144,7 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 
 	return &ControlPlaneUpgrader{
 		log:                     log,
-		userVersion:             userVersion,
-		desiredVersion:          desiredVersion,
+		desiredVersion:          parsedVersion,
 		clusterNamespace:        config.TargetCluster.Namespace,
 		clusterName:             config.TargetCluster.Name,
 		managementClusterClient: managementClusterClient,
@@ -175,26 +167,14 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 		return errors.New("Found 0 control plane machines")
 	}
 
-	min, max, err := u.minMaxControlPlaneVersions(machines)
+	err = u.updateKubeletConfigMapIfNeeded(u.desiredVersion)
 	if err != nil {
-		return errors.Wrap(err, "error determining current control plane versions")
+		return err
 	}
 
-	// default the desired version if the user did not specify it
-	if unsetVersion.EQ(u.userVersion) {
-		u.desiredVersion = max
-	}
-
-	if isMinorVersionUpgrade(min, u.desiredVersion) {
-		err = u.updateKubeletConfigMapIfNeeded(u.desiredVersion)
-		if err != nil {
-			return err
-		}
-
-		err = u.updateKubeletRbacIfNeeded(u.desiredVersion)
-		if err != nil {
-			return err
-		}
+	err = u.updateKubeletRbacIfNeeded(u.desiredVersion)
+	if err != nil {
+		return err
 	}
 
 	u.log.Info("Checking etcd health")
@@ -244,34 +224,6 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	}
 
 	return nil
-}
-
-func isMinorVersionUpgrade(base, update semver.Version) bool {
-	return base.Major == update.Major && base.Minor < update.Minor
-}
-
-func (u *ControlPlaneUpgrader) minMaxControlPlaneVersions(machines []*clusterv1.Machine) (semver.Version, semver.Version, error) {
-	var min, max semver.Version
-
-	for _, machine := range machines {
-		if machine.Spec.Version == nil {
-			return semver.Version{}, semver.Version{}, errors.Errorf("nil control plane version for machine %s/%s", machine.Namespace, machine.Name)
-		}
-		if *machine.Spec.Version != "" {
-			machineVersion, err := semver.ParseTolerant(*machine.Spec.Version)
-			if err != nil {
-				return min, max, errors.Wrapf(err, "invalid control plane version %q for machine %s/%s", *machine.Spec.Version, machine.Namespace, machine.Name)
-			}
-			if min.EQ(unsetVersion) || machineVersion.LT(min) {
-				min = machineVersion
-			}
-			if max.EQ(unsetVersion) || machineVersion.GT(max) {
-				max = machineVersion
-			}
-		}
-	}
-
-	return min, max, nil
 }
 
 func (u *ControlPlaneUpgrader) updateKubeletConfigMapIfNeeded(version semver.Version) error {
