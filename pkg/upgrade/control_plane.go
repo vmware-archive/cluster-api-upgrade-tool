@@ -67,6 +67,7 @@ type ControlPlaneUpgrader struct {
 	secretsUpdated          bool
 	infrastructurePatch     jsonpatch.Patch
 	bootstrapPatch          jsonpatch.Patch
+	machineTimeout          time.Duration
 }
 
 func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgrader, error) {
@@ -87,6 +88,9 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 	// machines, infra machines, and KubeadmConfigs, we use the same validation here.
 	if errs := validation.IsDNS1123Subdomain(config.UpgradeID); len(errs) > 0 {
 		return nil, errors.New("upgrade ID: " + strings.Join(errs, ", "))
+	}
+	if config.MachineTimeout.Duration == 0 {
+		return nil, errors.New("machine timeout must be greater than 0")
 	}
 
 	parsedVersion, err := semver.ParseTolerant(config.KubernetesVersion)
@@ -155,6 +159,7 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 		upgradeID:               config.UpgradeID,
 		infrastructurePatch:     infrastructurePatch,
 		bootstrapPatch:          bootstrapPatch,
+		machineTimeout:          config.MachineTimeout.Duration,
 	}, nil
 }
 
@@ -430,18 +435,20 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		}
 	}
 
-	// TODO extract timeout as a configurable constant
-	newProviderID, err := u.waitForProviderID(u.clusterNamespace, replacementKey.Name, 15*time.Minute)
+	ctx := context.TODO()
+	ctx, cancel := context.WithTimeout(ctx, u.machineTimeout)
+	defer cancel()
+
+	log.Info("Waiting for new machine", "timeout", u.machineTimeout)
+	newProviderID, err := u.waitForProviderID(ctx, u.clusterNamespace, replacementKey.Name)
 	if err != nil {
 		return err
 	}
-	// TODO extract timeout as a configurable constant
-	node, err := u.waitForMatchingNode(newProviderID, 15*time.Minute)
+	node, err := u.waitForMatchingNode(ctx, newProviderID)
 	if err != nil {
 		return err
 	}
-	// TODO extract timeout as a configurable constant
-	if err := u.waitForNodeReady(node, 15*time.Minute); err != nil {
+	if err := u.waitForNodeReady(ctx, node); err != nil {
 		return err
 	}
 
@@ -1032,11 +1039,11 @@ func (u *ControlPlaneUpgrader) UpdateProviderIDsToNodes() error {
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) waitForProviderID(ns, name string, timeout time.Duration) (string, error) {
+func (u *ControlPlaneUpgrader) waitForProviderID(ctx context.Context, ns, name string) (string, error) {
 	log := u.log.WithValues("namespace", ns, "name", name)
 	log.Info("Waiting for machine to have a provider id")
 	var providerID string
-	err := wait.PollImmediate(5*time.Second, timeout, func() (bool, error) {
+	err := wait.PollImmediateUntil(5*time.Second, func() (bool, error) {
 		machine := &clusterv1.Machine{}
 		if err := u.managementClusterClient.Get(context.TODO(), ctrlclient.ObjectKey{Name: name, Namespace: ns}, machine); err != nil {
 			log.Error(err, "Error getting machine, will try again")
@@ -1053,7 +1060,7 @@ func (u *ControlPlaneUpgrader) waitForProviderID(ns, name string, timeout time.D
 			return true, nil
 		}
 		return false, nil
-	})
+	}, ctx.Done())
 
 	if err != nil {
 		return "", errors.Wrap(err, "timed out waiting for machine provider id")
@@ -1062,7 +1069,7 @@ func (u *ControlPlaneUpgrader) waitForProviderID(ns, name string, timeout time.D
 	return providerID, nil
 }
 
-func (u *ControlPlaneUpgrader) waitForMatchingNode(rawProviderID string, timeout time.Duration) (*v1.Node, error) {
+func (u *ControlPlaneUpgrader) waitForMatchingNode(ctx context.Context, rawProviderID string) (*v1.Node, error) {
 	u.log.Info("Waiting for node", "provider-id", rawProviderID)
 	var matchingNode v1.Node
 	providerID, err := noderefutil.NewProviderID(rawProviderID)
@@ -1070,7 +1077,7 @@ func (u *ControlPlaneUpgrader) waitForMatchingNode(rawProviderID string, timeout
 		return nil, err
 	}
 
-	err = wait.PollImmediate(5*time.Second, timeout, func() (bool, error) {
+	err = wait.PollImmediateUntil(5*time.Second, func() (bool, error) {
 		nodes, err := u.targetKubernetesClient.CoreV1().Nodes().List(metav1.ListOptions{})
 		if err != nil {
 			u.log.Error(err, "Error listing nodes in target cluster, will try again")
@@ -1091,7 +1098,7 @@ func (u *ControlPlaneUpgrader) waitForMatchingNode(rawProviderID string, timeout
 		}
 
 		return false, nil
-	})
+	}, ctx.Done())
 
 	if err != nil {
 		return nil, errors.Wrap(err, "timed out waiting for matching node")
@@ -1100,17 +1107,17 @@ func (u *ControlPlaneUpgrader) waitForMatchingNode(rawProviderID string, timeout
 	return &matchingNode, nil
 }
 
-func (u *ControlPlaneUpgrader) waitForNodeReady(newNode *v1.Node, timeout time.Duration) error {
+func (u *ControlPlaneUpgrader) waitForNodeReady(ctx context.Context, newNode *v1.Node) error {
 	// wait for NodeReady
 	nodeHostname := hostnameForNode(newNode)
 	if nodeHostname == "" {
 		u.log.Info("unable to find hostname for node", "node", newNode.Name)
 		return errors.Errorf("unable to find hostname for node %s", newNode.Name)
 	}
-	err := wait.PollImmediate(15*time.Second, timeout, func() (bool, error) {
+	err := wait.PollImmediateUntil(15*time.Second, func() (bool, error) {
 		ready := u.isReady(nodeHostname)
 		return ready, nil
-	})
+	}, ctx.Done())
 	if err != nil {
 		return errors.Wrapf(err, "components on node %s are not ready", newNode.Name)
 	}

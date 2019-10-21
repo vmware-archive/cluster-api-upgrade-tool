@@ -3,6 +3,10 @@
 
 package upgrade
 
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
 // Config contains all the configurations necessary to upgrade a Kubernetes cluster.
 type Config struct {
 	ManagementCluster ManagementClusterConfig `json:"managementCluster"`
@@ -10,6 +14,7 @@ type Config struct {
 	KubernetesVersion string                  `json:"kubernetesVersion"`
 	UpgradeID         string                  `json:"upgradeID"`
 	Patches           PatchConfig             `json:"patches"`
+	MachineTimeout    metav1.Duration         `json:"machineTimeout"`
 }
 
 // ManagementClusterConfig is the Kubeconfig and relevant information to connect to the management cluster of the worker cluster being upgraded.
