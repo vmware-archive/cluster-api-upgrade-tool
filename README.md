@@ -42,6 +42,8 @@ targetCluster:
   name: cluster1
 kubernetesVersion: v1.15.3
 upgradeID: 1234
+patches:
+  infrastructure: '[{ "op": "replace", "path": "/spec/ami", "value": "ami-123456789" }]'
 ```
 
 Run an upgrade with the following command:
@@ -70,13 +72,46 @@ Usage:
   ./bin/cluster-api-upgrade-tool [flags]
 
 Flags:
-      --cluster-name string         The name of target cluster (required)
-      --cluster-namespace string    The namespace of target cluster (required)
-      --config string               Path to a config file in yaml or json format
-  -h, --help                        help for ./bin/cluster-api-upgrade-tool
-      --kubeconfig string           The kubeconfig path for the management cluster
-      --kubernetes-version string   Desired kubernetes version to upgrade to (required)
-      --upgrade-id string           Unique identifier used to resume a partial upgrade (optional)
+      --bootstrap-patches string        JSON patch expression of patches to apply to the machine's bootstrap resource (optional)
+      --cluster-name string             The name of target cluster (required)
+      --cluster-namespace string        The namespace of target cluster (required)
+      --config string                   Path to a config file in yaml or json format
+  -h, --help                            help for ./bin/cluster-api-upgrade-tool
+      --infrastructure-patches string   JSON patch expression of patches to apply to the machine's infrastructure resource (optional)
+      --kubeconfig string               The kubeconfig path for the management cluster
+      --kubernetes-version string       Desired kubernetes version to upgrade to (required)
+      --upgrade-id string               Unique identifier used to resume a partial upgrade (optional)
+```
+
+### Patches
+
+The tool supports using [JSON Patch](https://tools.ietf.org/html/rfc6902) to modify fields in the infrastructure and
+bootstrap resources. An example use for this could be to change the image ID in an infrastructure provider's
+machine resource. For example, to change the AMI for an `AWSMachine` for the AWS provider, you would use the following:
+
+```
+[{ "op": "replace", "path": "/spec/ami", "value": "ami-123456789" }]
+```
+
+When specifying patches, make sure you do not replace an entire field such as `metadata` or `spec` unless you include
+the full content for the field. For example, if you want to add a label while retaining the existing ones, do **not**
+use this patch, as it will replace the entire `metadata` field, potentially losing critical information:
+
+```
+[{ "op": "add", "path": "/metadata", "value": {"labels":{ "hello":"world"}} }]
+```
+
+Instead, do this:
+
+```
+[{ "op": "add", "path": "/metadata/labels/hello", "value": "world" }]
+```
+
+This requires that there are already labels present in the original resource. If not, you need to add the entire
+labels field:
+
+```
+[{ "op": "add", "path": "/metadata/labels", "value": {"hello":"world"} }]
 ```
 
 ## Contributing

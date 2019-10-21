@@ -10,11 +10,14 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/util/validation"
-	"sigs.k8s.io/yaml"
-
+	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/yaml"
 )
 
 func TestEtcdMemberHealthStructDecoding(t *testing.T) {
@@ -184,4 +187,47 @@ func TestGenerateMachineName(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPatchRuntimeObject(t *testing.T) {
+	u := new(unstructured.Unstructured)
+	u.Object = map[string]interface{}{
+		"apiVersion": "cluster.x-k8s.io/v1alpha3",
+		"kind":       "Cluster",
+		"a":          "b",
+	}
+
+	patch, err := jsonpatch.DecodePatch([]byte(`[{ "op": "add", "path": "/metadata", "value": {"labels":{ "hello":"world"}} }]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	patched, err := patchRuntimeObject(u, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assert.IsType(t, new(unstructured.Unstructured), patched)
+	patchedU := patched.(*unstructured.Unstructured)
+	labels, found, err := unstructured.NestedMap(patchedU.Object, "metadata", "labels")
+	assert.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, map[string]interface{}{"hello": "world"}, labels)
+
+	namespace := &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "ns",
+			Name:      "name",
+		},
+	}
+
+	patched, err = patchRuntimeObject(namespace, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assert.IsType(t, new(v1.Namespace), patched)
+	patchedNamespace := patched.(*v1.Namespace)
+	assert.Equal(t, map[string]string{"hello": "world"}, patchedNamespace.Labels)
+
 }

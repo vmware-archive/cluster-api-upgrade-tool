@@ -14,6 +14,7 @@ type Config struct {
 	TargetCluster     TargetClusterConfig     `json:"targetCluster"`
 	KubernetesVersion string                  `json:"kubernetesVersion"`
 	UpgradeID         string                  `json:"upgradeID"`
+	Patches           PatchConfig             `json:"patches"`
 }
 
 // ManagementClusterConfig is the Kubeconfig and relevant information to connect to the management cluster of the worker cluster being upgraded.
@@ -27,4 +28,11 @@ type ManagementClusterConfig struct {
 type TargetClusterConfig struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
+}
+
+// PatchConfig contains JSON patch documents for modifying a Machine's referenced infrastructure and bootstrap
+// resources.
+type PatchConfig struct {
+	Infrastructure string `json:"infrastructure"`
+	Bootstrap      string `json:"bootstrap"`
 }

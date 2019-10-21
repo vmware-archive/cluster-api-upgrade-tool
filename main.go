@@ -101,6 +101,20 @@ func main() {
 		"Unique identifier used to resume a partial upgrade (optional)",
 	)
 
+	root.Flags().StringVar(
+		&upgradeConfig.Patches.Infrastructure,
+		"infrastructure-patches",
+		"",
+		"JSON patch expression of patches to apply to the machine's infrastructure resource (optional)",
+	)
+
+	root.Flags().StringVar(
+		&upgradeConfig.Patches.Bootstrap,
+		"bootstrap-patches",
+		"",
+		"JSON patch expression of patches to apply to the machine's bootstrap resource (optional)",
+	)
+
 	if err := root.Execute(); err != nil {
 		// Print a stack trace, if possible. We may end up with the error message printed twice,
 		// but the stack trace can be invaluable, so we'll accept this for the time being.
