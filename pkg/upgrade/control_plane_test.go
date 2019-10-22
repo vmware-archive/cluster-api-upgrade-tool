@@ -143,7 +143,7 @@ metadata:
 
 func TestGenerateMachineName(t *testing.T) {
 	maxNameLength := validation.DNS1123SubdomainMaxLength
-	upgradeID := "1234567890"
+	upgradeID := "a1b2c3d4e5f.6g7h-8i9j0k"
 	suffix := ".upgrade." + upgradeID
 	maxNameLengthWithoutTrimming := maxNameLength - len(suffix)
 
@@ -169,7 +169,7 @@ func TestGenerateMachineName(t *testing.T) {
 		},
 		{
 			name:         "replace old upgrade id - short",
-			originalName: "my-cluster.upgrade.0000011111",
+			originalName: "my-cluster.upgrade.a00000.11-111b",
 			expected:     "my-cluster" + suffix,
 		},
 		{
