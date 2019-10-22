@@ -42,9 +42,10 @@ import (
 )
 
 const (
-	etcdCACertFile = "/etc/kubernetes/pki/etcd/ca.crt"
-	etcdCertFile   = "/etc/kubernetes/pki/etcd/peer.crt"
-	etcdKeyFile    = "/etc/kubernetes/pki/etcd/peer.key"
+	etcdCACertFile       = "/etc/kubernetes/pki/etcd/ca.crt"
+	etcdCertFile         = "/etc/kubernetes/pki/etcd/peer.crt"
+	etcdKeyFile          = "/etc/kubernetes/pki/etcd/peer.key"
+	kubeadmConfigMapName = "kubeadm-config"
 
 	// annotationPrefix is the prefix for all annotations managed by this tool.
 	annotationPrefix = "upgrade.cluster-api.vmware.com/"
@@ -235,7 +236,7 @@ func (u *ControlPlaneUpgrader) updateKubeletConfigMapIfNeeded(version semver.Ver
 	log := u.log.WithValues("name", desiredKubeletConfigMapName)
 
 	log.Info("Checking for existence of kubelet configmap")
-	_, err := u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Get(desiredKubeletConfigMapName, metav1.GetOptions{})
+	_, err := u.targetKubernetesClient.CoreV1().ConfigMaps(metav1.NamespaceSystem).Get(desiredKubeletConfigMapName, metav1.GetOptions{})
 	if err == nil {
 		log.Info("kubelet configmap already exists")
 		return nil
@@ -250,7 +251,7 @@ func (u *ControlPlaneUpgrader) updateKubeletConfigMapIfNeeded(version semver.Ver
 	previousMinorVersionKubeletConfigMapName := fmt.Sprintf("kubelet-config-%d.%d", version.Major, version.Minor-1)
 
 	log.Info("Retrieving kubelet configmap for previous minor version", "previous-name", previousMinorVersionKubeletConfigMapName)
-	cm, err := u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Get(previousMinorVersionKubeletConfigMapName, metav1.GetOptions{})
+	cm, err := u.targetKubernetesClient.CoreV1().ConfigMaps(metav1.NamespaceSystem).Get(previousMinorVersionKubeletConfigMapName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return errors.Errorf("unable to find kubelet configmap %s", previousMinorVersionKubeletConfigMapName)
 	}
@@ -259,7 +260,7 @@ func (u *ControlPlaneUpgrader) updateKubeletConfigMapIfNeeded(version semver.Ver
 	cm.ResourceVersion = ""
 
 	log.Info("Creating kubelet configmap as a copy from the previous minor version")
-	_, err = u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Create(cm)
+	_, err = u.targetKubernetesClient.CoreV1().ConfigMaps(metav1.NamespaceSystem).Create(cm)
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "error creating configmap %s", desiredKubeletConfigMapName)
 	}
@@ -275,11 +276,11 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 	log := u.log.WithValues("role-name", "kube-system/"+roleName)
 
 	log.Info("Looking up role")
-	_, err := u.targetKubernetesClient.RbacV1().Roles("kube-system").Get(roleName, metav1.GetOptions{})
+	_, err := u.targetKubernetesClient.RbacV1().Roles(metav1.NamespaceSystem).Get(roleName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		newRole := &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
-				Namespace: "kube-system",
+				Namespace: metav1.NamespaceSystem,
 				Name:      roleName,
 			},
 			Rules: []rbacv1.PolicyRule{
@@ -293,7 +294,7 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 		}
 
 		log.Info("Need to create role")
-		_, err := u.targetKubernetesClient.RbacV1().Roles("kube-system").Create(newRole)
+		_, err := u.targetKubernetesClient.RbacV1().Roles(metav1.NamespaceSystem).Create(newRole)
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return errors.Wrapf(err, "error creating role %s", roleName)
 		}
@@ -303,11 +304,11 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 	}
 
 	log.Info("Looking up role binding")
-	_, err = u.targetKubernetesClient.RbacV1().RoleBindings("kube-system").Get(roleName, metav1.GetOptions{})
+	_, err = u.targetKubernetesClient.RbacV1().RoleBindings(metav1.NamespaceSystem).Get(roleName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		newRoleBinding := &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
-				Namespace: "kube-system",
+				Namespace: metav1.NamespaceSystem,
 				Name:      roleName,
 			},
 			Subjects: []rbacv1.Subject{
@@ -330,7 +331,7 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 		}
 
 		log.Info("Need to create role binding")
-		_, err = u.targetKubernetesClient.RbacV1().RoleBindings("kube-system").Create(newRoleBinding)
+		_, err = u.targetKubernetesClient.RbacV1().RoleBindings(metav1.NamespaceSystem).Create(newRoleBinding)
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return errors.Wrapf(err, "error creating rolebinding %s", roleName)
 		}
@@ -464,6 +465,11 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 	// TODO plumb a context down to here instead of using TODO
 	if err := u.managementClusterClient.Delete(context.TODO(), machine); err != nil {
 		return errors.Wrapf(err, "error deleting machine %s/%s", machine.Namespace, machine.Name)
+	}
+
+	// remove node from apiEndpoints in Kubeadm config map
+	if err := u.removeNodeFromKubeadmConfigMap(oldHostName); err != nil {
+		return err
 	}
 
 	return nil
@@ -637,6 +643,7 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 		}
 	}
 	bootstrap.Spec.JoinConfiguration.NodeRegistration = nodeRegistration
+	bootstrap.Spec.JoinConfiguration.Discovery.BootstrapToken = &kubeadmv1beta1.BootstrapTokenDiscovery{}
 
 	// clear init configuration
 	// When you have both the init configuration and the join configuration present
@@ -886,7 +893,7 @@ func (u *ControlPlaneUpgrader) deleteEtcdMember(timeout time.Duration, etcdMembe
 
 func (u *ControlPlaneUpgrader) listEtcdPods() ([]v1.Pod, error) {
 	// get pods in kube-system with label component=etcd
-	list, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").List(metav1.ListOptions{LabelSelector: "component=etcd"})
+	list, err := u.targetKubernetesClient.CoreV1().Pods(metav1.NamespaceSystem).List(metav1.ListOptions{LabelSelector: "component=etcd"})
 	if err != nil {
 		return []v1.Pod{}, errors.Wrap(err, "error listing pods")
 	}
@@ -958,7 +965,7 @@ func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, a
 // updateAndUploadKubeadmKubernetesVersion updates the Kubernetes version stored in the kubeadm configmap. This is
 // required so that new Machines joining the cluster use the correct Kubernetes version as part of the upgrade.
 func (u *ControlPlaneUpgrader) updateAndUploadKubeadmKubernetesVersion() error {
-	original, err := u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Get("kubeadm-config", metav1.GetOptions{})
+	original, err := u.targetKubernetesClient.CoreV1().ConfigMaps(metav1.NamespaceSystem).Get(kubeadmConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		return errors.Wrap(err, "error getting kubeadm configmap from target cluster")
 	}
@@ -968,8 +975,26 @@ func (u *ControlPlaneUpgrader) updateAndUploadKubeadmKubernetesVersion() error {
 		return err
 	}
 
-	if _, err = u.targetKubernetesClient.CoreV1().ConfigMaps("kube-system").Update(updated); err != nil {
-		return errors.Wrap(err, "error updating kubeadm configmap")
+	if _, err = u.targetKubernetesClient.CoreV1().ConfigMaps(metav1.NamespaceSystem).Update(updated); err != nil {
+		return errors.Wrap(err, "error updating kubeadm ConfigMap")
+	}
+
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) removeNodeFromKubeadmConfigMap(nodeName string) error {
+	original, err := u.targetKubernetesClient.CoreV1().ConfigMaps(metav1.NamespaceSystem).Get(kubeadmConfigMapName, metav1.GetOptions{})
+	if err != nil {
+		return errors.Wrap(err, "error getting kubeadm configmap from target cluster")
+	}
+
+	updated, err := removeNodeFromClusterStatus(original, nodeName)
+	if err != nil {
+		return err
+	}
+
+	if _, err = u.targetKubernetesClient.CoreV1().ConfigMaps(metav1.NamespaceSystem).Update(updated); err != nil {
+		return errors.Wrap(err, "error updating kubeadm ConfigMap")
 	}
 
 	return nil
@@ -980,7 +1005,7 @@ func updateKubeadmKubernetesVersion(original *v1.ConfigMap, version string) (*v1
 
 	clusterConfig := make(map[string]interface{})
 	if err := yaml.Unmarshal([]byte(cm.Data["ClusterConfiguration"]), &clusterConfig); err != nil {
-		return nil, errors.Wrap(err, "error decoding kubeadm configmap ClusterConfiguration")
+		return nil, errors.Wrap(err, "error decoding kubeadm map ClusterConfiguration")
 	}
 
 	clusterConfig["kubernetesVersion"] = version
@@ -1130,7 +1155,7 @@ func (u *ControlPlaneUpgrader) isReady(nodeHostname string) bool {
 		log := u.log.WithValues("pod", podName)
 
 		log.Info("Getting pod")
-		pod, err := u.targetKubernetesClient.CoreV1().Pods("kube-system").Get(podName, metav1.GetOptions{})
+		pod, err := u.targetKubernetesClient.CoreV1().Pods(metav1.NamespaceSystem).Get(podName, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			log.Info("Pod not found yet")
 			return false
@@ -1154,4 +1179,38 @@ func (u *ControlPlaneUpgrader) isReady(nodeHostname string) bool {
 	}
 
 	return true
+}
+
+func removeNodeFromClusterStatus(original *v1.ConfigMap, nodeName string) (*v1.ConfigMap, error) {
+	cm := original.DeepCopy()
+
+	clusterStatus := &unstructured.Unstructured{}
+
+	if cs, ok := cm.Data["ClusterStatus"]; !ok {
+		return nil, errors.New("ClusterStatus not found in kubeadm ConfigMap")
+	} else {
+		if err := yaml.Unmarshal([]byte(cs), &clusterStatus); err != nil {
+			return nil, errors.Wrap(err, "error decoding kubeadm ClusterStatus object")
+		}
+	}
+
+	endpoints, _, err := unstructured.NestedMap(clusterStatus.UnstructuredContent(), "apiEndpoints")
+	if err != nil {
+		return nil, err
+	}
+
+	delete(endpoints, nodeName)
+	err = unstructured.SetNestedMap(clusterStatus.UnstructuredContent(), endpoints, "apiEndpoints")
+	if err != nil {
+		return nil, err
+	}
+
+	updated, err := yaml.Marshal(clusterStatus)
+	if err != nil {
+		return nil, errors.Wrap(err, "error encoding kubeadm ClusterStatus object")
+	}
+
+	cm.Data["ClusterStatus"] = string(updated)
+
+	return cm, nil
 }
