@@ -468,10 +468,21 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		}
 	}
 
+	const (
+		deleteMachineInterval = 10 * time.Second
+		deleteMachineTimeout  = 5 * time.Minute
+	)
 	u.log.Info("Deleting existing machine", "namespace", machine.Namespace, "name", machine.Name)
-	// TODO plumb a context down to here instead of using TODO
-	if err := u.managementClusterClient.Delete(context.TODO(), machine); err != nil {
-		return errors.Wrapf(err, "error deleting machine %s/%s", machine.Namespace, machine.Name)
+	err = wait.PollImmediate(deleteMachineInterval, deleteMachineTimeout, func() (bool, error) {
+		// TODO plumb a context down to here instead of using TODO
+		if err := u.managementClusterClient.Delete(context.TODO(), machine); err != nil {
+			log.Error(err, "error deleting machine")
+			return false, nil
+		}
+		return true, nil
+	})
+	if err != nil {
+		return errors.Wrapf(err, "timed out deleting machine %s/%s", machine.Namespace, machine.Name)
 	}
 
 	// remove node from apiEndpoints in Kubeadm config map
