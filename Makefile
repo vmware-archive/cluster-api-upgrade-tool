@@ -17,7 +17,6 @@ TOOLS_DIR := hack/tools
 TOOLS_BIN_DIR := $(TOOLS_DIR)/bin
 BIN_DIR := bin
 
-CAPDCTL := $(TOOLS_BIN_DIR)/capdctl
 GOLANGCI_LINT := $(TOOLS_BIN_DIR)/golangci-lint
 
 
@@ -69,12 +68,8 @@ test:  ## Run unit tests
 	go test ./...
 
 .PHONY: integration-test
-integration-test: $(CAPDCTL) ## Run integration tests
+integration-test: ## Run integration tests
 	go test -tags integration -count=1 -v -timeout=20m $(TEST_ARGS) ./test/integration
-
-# Build capdctl
-$(CAPDCTL): $(TOOLS_DIR)/go.mod ## Build capdctl
-	cd $(TOOLS_DIR) && go build -o $(CAPDCTL_BIN) sigs.k8s.io/cluster-api-provider-docker/cmd/capdctl
 
 
 ## --------------------------------------

@@ -2,469 +2,381 @@
 
 package integration
 
-// Leaving this as an integration test artifact.
-// Tests need to be changed to pass against v1alpha2 cluster-api flow.
-
-/*
 import (
-	"bytes"
-	"encoding/base64"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"os/exec"
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
+	"github.com/vmware/cluster-api-upgrade-tool/pkg/logging"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/upgrade"
+	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"sigs.k8s.io/cluster-api/pkg/controller/remote"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/pointer"
+	cabpkv1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/api/v1alpha2"
+	"sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/kubeadm/v1beta1"
+	capdv1 "sigs.k8s.io/cluster-api-provider-docker/api/v1alpha2"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	"sigs.k8s.io/cluster-api/util/kubeconfig"
+	"sigs.k8s.io/cluster-api/util/restmapper"
+	"sigs.k8s.io/cluster-api/util/yaml"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// If you want to run just one at a time here are the commands:
-
-// To test multiple control plane upgrades
-// make test TESTCASE=TestMultipleControlPlaneUpgradeScenario
-
-// To test a single control plane upgrade
-// make test TESTCASE=TestUpgradeScenario
-
-// To test machine deployment upgrade
-// make test TESTCASE=TestMachineDeployment
-
-// Code improvements:
-// TODO: replace fmt.Println with t.Log
-// TODO: Figure out a better naming strategy than hardcoding. I expected this to change when this test solidifies and then more tests are added
-// TODO: CLEANUP CODE, probably use a defer. Not sure what kind of cleanup to do. Do we want to try to reuse the management cluster?
-//       should each test get its own unique cluster and then have a single global teardown of the management cluster?
-// TODO: Fixup the kubectl command to be nicer to use. It has a super weird signature right now. Suggested from review:
-//       kubectl().ForCluster(c).WithReader(r).Run("apply", "-f", "-") might be nice!
-// TODO: create a namespace. right now everything is default since that ns already exists.
-
-const (
-	workerNodeType        = "worker"
-	controlPlaneNodeType  = "control-plane"
-	capiImageName         = "us.gcr.io/k8s-artifacts-prod/cluster-api/cluster-api-controller:v0.1.6"
-	capdImageName         = "gcr.io/kubernetes1-226021/capd-manager:latest"
-	managementClusterName = "management"
-	secretKubeconfigKey   = "value"
-)
-
-var (
-	capdctlBinary = "hack/tools/bin/capdctl"
-)
-
-func init() {
-	// Allow overriding the capdctl binary
-	binary := os.Getenv("CAPDCTL")
-	if binary != "" {
-		capdctlBinary = binary
-	}
+func TestUpgrade(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Upgrade Suite")
 }
 
-func TestMultipleControlPlaneUpgradeScenario(t *testing.T) {
-	// normal set up
-	setupManagementCluster(t)
+const kindConfig = `kind: Cluster
+apiVersion: kind.sigs.k8s.io/v1alpha3
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: /var/run/docker.sock
+        containerPath: /var/run/docker.sock`
 
-	// If these are not unique then you must tear down the management cluster or clean it thoroughly between runs
-	clusterName := "my-cluster"
-	namespace := "default"
-	numberOfControlPlaneNodes := 3
+var _ = Describe("Upgrade Tool", func() {
+	var (
+		managementClusterClient client.Client
+		managementClusterName   string
+		clusterNS               string
+		cluster                 *clusterv1.Cluster
+		ctx                     = context.Background()
+	)
 
-	// Create a test cluster to upgrade
-	if err := createTestControlPlane(clusterName, namespace, "v1.14.1", numberOfControlPlaneNodes); err != nil {
-		t.Fatal(handleErr(err))
-	}
-	if err := createWorkers(clusterName, namespace, "v1.14.1", 1); err != nil {
-		t.Fatal(handleErr(err))
-	}
+	BeforeEach(func() {
+		var err error
+		managementClusterName = fmt.Sprintf("mgmt-%d", time.Now().Unix())
 
-	// wait for a secret to show up
-	fmt.Println("Waiting up to 5 minutes for a the kubeconfig secret to appear")
-	if err := waitForKubeconfigSecret(clusterName, namespace); err != nil {
-		t.Fatal(handleErr(err))
-	}
+		tempKindConfigFile, err := ioutil.TempFile("", "")
+		Expect(err).To(BeNil())
+		defer os.Remove(tempKindConfigFile.Name())
 
-	fmt.Println("Waiting for up to 5 minutes for etcd to be ready")
-	if err := waitForEtcdReady(clusterName, namespace, numberOfControlPlaneNodes); err != nil {
-		t.Fatal(handleErr(err))
-	}
+		_, err = fmt.Fprintln(tempKindConfigFile, kindConfig)
+		Expect(err).To(BeNil())
 
-	fmt.Println("Starting the upgrade")
-	path := kubeconfigPath("management")
+		// normal set up
+		By("Creating a management cluster")
+		Expect(runCommand("kind", "create", "cluster", "--name", managementClusterName, "--config", tempKindConfigFile.Name())).To(Succeed())
 
-	cfg := upgrade.Config{
-		KubernetesVersion: "v1.14.2",
-		ManagementCluster: upgrade.ManagementClusterConfig{
-			Kubeconfig: string(path),
-		},
-		TargetCluster: upgrade.TargetClusterConfig{
-			Name:         clusterName,
-			Namespace:    namespace,
-			UpgradeScope: upgrade.ControlPlaneScope,
-			CAKeyPair: upgrade.KeyPairConfig{
-				KubeconfigSecretRef: secretName(clusterName),
+		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+		loadingRules.ExplicitPath = kubeconfigPath(managementClusterName)
+		clientcmdClientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{})
+
+		config, err := clientcmdClientConfig.ClientConfig()
+		Expect(err).To(BeNil())
+
+		scheme := runtime.NewScheme()
+		Expect(v1.AddToScheme(scheme)).To(Succeed())
+		Expect(clusterv1.AddToScheme(scheme)).To(Succeed())
+		Expect(cabpkv1.AddToScheme(scheme)).To(Succeed())
+		Expect(capdv1.AddToScheme(scheme)).To(Succeed())
+
+		restMapper, err := restmapper.NewCached(config)
+		Expect(err).To(BeNil())
+
+		By("Creating a management cluster client")
+		managementClusterClient, err = client.New(config, client.Options{Scheme: scheme, Mapper: restMapper})
+		Expect(err).To(BeNil())
+
+		yamls := []string{
+			"https://github.com/kubernetes-sigs/cluster-api/releases/download/v0.2.6/cluster-api-components.yaml",
+			"https://github.com/kubernetes-sigs/cluster-api-bootstrap-provider-kubeadm/releases/download/v0.1.4/bootstrap-components.yaml",
+			"https://github.com/kubernetes-sigs/cluster-api-provider-docker/releases/download/v0.2.0/provider_components.yaml",
+		}
+
+		var crds []string
+
+		By("Deploying CAPI, CABPK, CAPD components")
+		for _, y := range yamls {
+			// Use an anonymous func so defer calls happen early
+			func() {
+				resp, err := http.Get(y)
+				Expect(err).To(BeNil())
+				defer resp.Body.Close()
+				decoder := yaml.NewYAMLDecoder(resp.Body)
+				for {
+					var u unstructured.Unstructured
+					_, gvk, err := decoder.Decode(nil, &u)
+					if err == io.EOF {
+						break
+					}
+					Expect(err).To(BeNil())
+
+					Expect(managementClusterClient.Create(ctx, &u)).To(Succeed())
+
+					if gvk.Kind == "CustomResourceDefinition" {
+						crds = append(crds, u.GetName())
+					}
+				}
+			}()
+		}
+
+		By("Waiting for CRDs to be ready")
+		err = wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
+			By("Inside PollImmediate")
+			for _, crd := range crds {
+				var u unstructured.Unstructured
+				u.SetAPIVersion("apiextensions.k8s.io/v1beta1")
+				u.SetKind("CustomResourceDefinition")
+
+				By("Getting CRD " + crd)
+				Expect(managementClusterClient.Get(ctx, client.ObjectKey{Name: crd}, &u)).To(Succeed())
+
+				By("Checking its conditions")
+				conditions, _, err := unstructured.NestedSlice(u.Object, "status", "conditions")
+				Expect(err).To(BeNil())
+				established := false
+				accepted := false
+				for _, condition := range conditions {
+					m, ok := condition.(map[string]interface{})
+					Expect(ok).To(BeTrue())
+					switch m["type"].(string) {
+					case "Established":
+						established = true
+					case "NamesAccepted":
+						accepted = true
+					}
+				}
+				if !accepted || !established {
+					return false, nil
+				}
+			}
+			return true, nil
+		})
+		Expect(err).To(BeNil())
+
+		By("Creating a test namespace")
+		ns := v1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "upgrade-",
 			},
-		},
-	}
-	if err := upgradeCluster(cfg); err != nil {
-		t.Fatal(handleErr(err))
-	}
-
-}
-
-func TestMachineDeployment(t *testing.T) {
-	setupManagementCluster(t)
-	clusterName := "machine-deployment"
-	namespace := "default"
-	numberOfControlPlaneNodes := 1
-	workerReplicas := 2
-
-	if err := createTestControlPlane(clusterName, namespace, "v1.14.1", numberOfControlPlaneNodes); err != nil {
-		t.Fatal(handleErr(err))
-	}
-	if err := createMachineDeployment(clusterName, namespace, "v1.14.1", workerReplicas); err != nil {
-		t.Fatal(handleErr(err))
-	}
-
-	// wait for kubeconfig to show up
-	fmt.Println("Waiting up to 5 minutes for a the kubeconfig secret to appear")
-	if err := waitForKubeconfigSecret(clusterName, namespace); err != nil {
-		t.Fatal(handleErr(err))
-	}
-
-	fmt.Println("Waiting for up to 5 minutes for etcd to be ready")
-	if err := waitForEtcdReady(clusterName, namespace, numberOfControlPlaneNodes); err != nil {
-		t.Fatal(handleErr(err))
-	}
-
-	path := kubeconfigPath("management")
-	cfg := upgrade.Config{
-		KubernetesVersion: "v1.14.2",
-		ManagementCluster: upgrade.ManagementClusterConfig{
-			Kubeconfig: strings.TrimSpace(string(path)),
-		},
-		TargetCluster: upgrade.TargetClusterConfig{
-			Name:         clusterName,
-			Namespace:    namespace,
-			UpgradeScope: upgrade.MachineDeploymentScope,
-			CAKeyPair: upgrade.KeyPairConfig{
-				KubeconfigSecretRef: secretName(clusterName),
-			},
-		},
-	}
-
-	fmt.Println("Waiting for the machines to be ready")
-	if err := waitForNodesReady(clusterName, namespace, workerReplicas+numberOfControlPlaneNodes); err != nil {
-		t.Fatal(handleErr(err))
-	}
-
-	fmt.Println("Starting the upgrade")
-	if err := upgradeCluster(cfg); err != nil {
-		t.Fatal(handleErr(err))
-	}
-}
-
-func TestUpgradeScenario(t *testing.T) {
-	// spin up management cluster
-	setupManagementCluster(t)
-
-	clusterName := "my-cluster"
-	namespace := "default"
-	numberOfControlPlaneNodes := 1
-
-	// Create a test cluster to upgrade
-	if err := createTestControlPlane(clusterName, namespace, "v1.14.1", numberOfControlPlaneNodes); err != nil {
-		t.Fatal(handleErr(err))
-	}
-	if err := createWorkers(clusterName, namespace, "v1.14.1", 1); err != nil {
-		t.Fatal(handleErr(err))
-	}
-
-	// wait for kubeconfig to show up
-	fmt.Println("Waiting up to 5 minutes for a the kubeconfig secret to appear")
-	if err := waitForKubeconfigSecret(clusterName, namespace); err != nil {
-		t.Fatal(handleErr(err))
-	}
-
-	fmt.Println("Waiting for up to 5 minutes for etcd to be ready")
-	if err := waitForEtcdReady(clusterName, namespace, numberOfControlPlaneNodes); err != nil {
-		t.Fatal(handleErr(err))
-	}
-
-	fmt.Println("ready for testing!")
-	// upgrade from 1.14.1 to 1.14.2
-
-	// management cluster kubeconfig
-	path := kubeconfigPath("management")
-
-	cfg := upgrade.Config{
-		KubernetesVersion: "v1.14.2",
-		ManagementCluster: upgrade.ManagementClusterConfig{
-			Kubeconfig: string(path),
-		},
-		TargetCluster: upgrade.TargetClusterConfig{
-			Name:         clusterName,
-			Namespace:    namespace,
-			UpgradeScope: upgrade.ControlPlaneScope,
-			CAKeyPair: upgrade.KeyPairConfig{
-				KubeconfigSecretRef: secretName(clusterName),
-			},
-		},
-	}
-	if err := upgradeCluster(cfg); err != nil {
-		t.Fatal(handleErr(err))
-	}
-}
-
-func waitForKubeconfigSecret(clusterName, namespace string) error {
-	return wait.PollImmediate(10*time.Second, 5*time.Minute, func() (bool, error) {
-		_, err := kubectl(nil, managementClusterName, "get", "secret", "-n", namespace, secretName(clusterName))
-		return err == nil, errors.WithStack(err)
+		}
+		Expect(managementClusterClient.Create(ctx, &ns)).To(Succeed())
+		// Get the generated name
+		clusterNS = ns.Name
 	})
-}
 
-func waitForNodesReady(clusterName, namespace string, expected int) error {
-	data, err := getChildKubeconfig(clusterName, namespace)
-	if err != nil {
-		return err
-	}
-	kubeconf, err := ioutil.TempFile("", "kubeconfig")
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	defer os.Remove(kubeconf.Name())
-	if err := ioutil.WriteFile(kubeconf.Name(), data, os.FileMode(0644)); err != nil {
-		return errors.WithStack(err)
-	}
-
-	readyRe := regexp.MustCompile(`\s+Ready`)
-	return wait.PollImmediate(5*time.Second, 5*time.Minute, func() (bool, error) {
-		cmd := exec.Command("kubectl",
-			"--kubeconfig", kubeconf.Name(),
-			"get",
-			"nodes",
-			"--no-headers",
-		)
-		out, err := cmd.Output()
-		if err != nil {
-			return false, errors.WithStack(err)
-		}
-		lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
-		idCount := 0
-		for _, l := range lines {
-			if readyRe.Match(l) {
-				idCount++
-			}
-		}
-		return idCount >= expected, nil
+	AfterEach(func() {
+		By("Deleting a management cluster")
+		Expect(runCommand("kind", "delete", "cluster", "--name", managementClusterName)).To(Succeed())
 	})
-}
 
-func waitForProviderIDOnMachines(clusterName, namespace string, expected int) error {
-	//k get machines -l cluster.k8s.io/cluster-name=my-cluster -o custom-columns=PROVIDERID:.spec.providerID --no-headers
-	return wait.PollImmediate(5*time.Second, 10*time.Minute, func() (bool, error) {
-		out, err := kubectl(nil, managementClusterName, "get", "machines",
-			"--namespace", namespace,
-			"--selector", fmt.Sprintf("cluster.k8s.io/cluster-name=%s", clusterName),
-			"--output", "custom-columns=PROVIDERID:.spec.providerID",
-			"--no-headers")
-		if err != nil {
-			return false, errors.WithStack(err)
-		}
-
-		lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
-		idCount := 0
-		for _, l := range lines {
-			item := string(bytes.TrimSpace(l))
-			if item != "<none>" {
-				idCount++
+	Describe("Control plane upgrades", func() {
+		It("Should work", func() {
+			By("Creating a DockerCluster")
+			dockerCluster := capdv1.DockerCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:    clusterNS,
+					GenerateName: "upgrade-",
+				},
 			}
-		}
-		return idCount >= expected, nil
+
+			Expect(managementClusterClient.Create(ctx, &dockerCluster)).To(Succeed())
+
+			By("Creating a Cluster")
+			cluster = &clusterv1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:    clusterNS,
+					GenerateName: "upgrade-",
+				},
+				Spec: clusterv1.ClusterSpec{
+					ClusterNetwork: &clusterv1.ClusterNetwork{
+						Pods: &clusterv1.NetworkRanges{
+							CIDRBlocks: []string{"192.168.0.0/16"},
+						},
+					},
+					InfrastructureRef: &v1.ObjectReference{
+						APIVersion: capdv1.GroupVersion.String(),
+						Kind:       "DockerCluster",
+						Namespace:  clusterNS,
+						Name:       dockerCluster.Name,
+					},
+				},
+			}
+			Expect(managementClusterClient.Create(ctx, cluster)).To(Succeed())
+
+			By("Creating a DockerMachine")
+			dockerMachine := capdv1.DockerMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:    clusterNS,
+					GenerateName: "upgrade-",
+				},
+			}
+			Expect(managementClusterClient.Create(ctx, &dockerMachine)).To(Succeed())
+
+			By("Creating a KubeadmConfig")
+			kubeadmConfig := cabpkv1.KubeadmConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:    clusterNS,
+					GenerateName: "upgrade-",
+				},
+				Spec: cabpkv1.KubeadmConfigSpec{
+					InitConfiguration: &v1beta1.InitConfiguration{
+						NodeRegistration: v1beta1.NodeRegistrationOptions{
+							KubeletExtraArgs: map[string]string{
+								"eviction-hard": "nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%",
+							},
+						},
+					},
+					ClusterConfiguration: &v1beta1.ClusterConfiguration{
+						ControllerManager: v1beta1.ControlPlaneComponent{
+							ExtraArgs: map[string]string{
+								"enable-hostpath-provisioner": "true",
+							},
+						},
+					},
+				},
+			}
+			Expect(managementClusterClient.Create(ctx, &kubeadmConfig)).To(Succeed())
+
+			By("Creating a Machine")
+			machine := clusterv1.Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:    clusterNS,
+					GenerateName: "upgrade-",
+					Labels: map[string]string{
+						"cluster.x-k8s.io/cluster-name":  cluster.Name,
+						"cluster.x-k8s.io/control-plane": "true",
+					},
+				},
+				Spec: clusterv1.MachineSpec{
+					Version: pointer.StringPtr("v1.14.1"),
+					Bootstrap: clusterv1.Bootstrap{
+						ConfigRef: &v1.ObjectReference{
+							APIVersion: cabpkv1.GroupVersion.String(),
+							Kind:       "KubeadmConfig",
+							Namespace:  clusterNS,
+							Name:       kubeadmConfig.Name,
+						},
+					},
+					InfrastructureRef: v1.ObjectReference{
+						APIVersion: capdv1.GroupVersion.String(),
+						Kind:       "DockerMachine",
+						Namespace:  clusterNS,
+						Name:       dockerMachine.Name,
+					},
+				},
+			}
+			Expect(managementClusterClient.Create(ctx, &machine)).To(Succeed())
+
+			// wait for a secret to show up
+			By("Waiting up to 5 minutes for a the kubeconfig secret to appear")
+			Expect(wait.PollImmediate(10*time.Second, 5*time.Minute, func() (bool, error) {
+				_, err := kubeconfig.FromSecret(managementClusterClient, cluster)
+				if apierrors.IsNotFound(err) {
+					return false, nil
+				}
+				return err == nil, err
+			})).To(Succeed())
+
+			By("Waiting for the control plane machine to have a node ref")
+			Expect(wait.PollImmediate(5*time.Second, 10*time.Minute, func() (bool, error) {
+				var m clusterv1.Machine
+				mKey := client.ObjectKey{Namespace: machine.Namespace, Name: machine.Name}
+				if err := managementClusterClient.Get(ctx, mKey, &m); err != nil {
+					return false, err
+				}
+				return m.Status.NodeRef != nil, nil
+			})).To(Succeed())
+
+			By("Waiting for up to 5 minutes for etcd to be ready")
+			workloadClient, err := workloadClusterClient(managementClusterClient, cluster)
+			Expect(err).To(BeNil())
+
+			expectedEtcdPods := 1
+			Expect(wait.PollImmediate(5*time.Second, 5*time.Minute, func() (bool, error) {
+				var podList v1.PodList
+				listOptions := []client.ListOption{
+					client.InNamespace("kube-system"),
+					client.MatchingLabels{"component": "etcd"},
+				}
+				if err := workloadClient.List(ctx, &podList, listOptions...); err != nil {
+					return false, err
+				}
+
+				actual := 0
+				for _, pod := range podList.Items {
+					if pod.Status.Phase == v1.PodRunning {
+						actual++
+					}
+				}
+
+				return actual >= expectedEtcdPods, nil
+			})).To(Succeed())
+
+			By("Performing the upgrade")
+			path := kubeconfigPath(managementClusterName)
+
+			cfg := upgrade.Config{
+				KubernetesVersion: "v1.14.2",
+				ManagementCluster: upgrade.ManagementClusterConfig{
+					Kubeconfig: string(path),
+				},
+				TargetCluster: upgrade.TargetClusterConfig{
+					Namespace: cluster.Namespace,
+					Name:      cluster.Name,
+				},
+				UpgradeID: "1",
+			}
+
+			log := logrus.New()
+			log.Out = os.Stdout
+			upgradeLog := logging.NewLogrusLoggerAdapter(log)
+
+			upgrader, err := upgrade.NewControlPlaneUpgrader(upgradeLog, cfg)
+			Expect(err).To(BeNil())
+
+			Expect(upgrader.Upgrade()).To(Succeed())
+
+			// TODO check that we have a single upgraded machine
+			// TODO check that we have a single upgraded node
+		})
 	})
-}
+})
 
-func getChildKubeconfig(clusterName, namespace string) ([]byte, error) {
-	secret, err := kubectl(nil, managementClusterName, "get", "secret", secretName(clusterName), "-n", namespace, "-o", fmt.Sprintf("jsonpath='{.data.%s}'", secretKubeconfigKey))
+func workloadClusterClient(managementClusterClient client.Client, cluster *clusterv1.Cluster) (client.Client, error) {
+	kubeConfig, err := kubeconfig.FromSecret(managementClusterClient, cluster)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "failed to retrieve kubeconfig secret for Cluster %s/%s", cluster.Namespace, cluster.Name)
 	}
-	secret = bytes.Trim(secret, "'")
-	out := make([]byte, base64.StdEncoding.DecodedLen(len(secret)))
-	n, err := base64.StdEncoding.Decode(out, secret)
+
+	restConfig, err := clientcmd.RESTConfigFromKubeConfig(kubeConfig)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, errors.Wrapf(err, "failed to create client configuration for Cluster %s/%s", cluster.Namespace, cluster.Name)
 	}
-	return out[:n], nil
-}
 
-func waitForEtcdReady(clusterName, namespace string, expected int) error {
-	data, err := getChildKubeconfig(clusterName, namespace)
+	ret, err := client.New(restConfig, client.Options{})
 	if err != nil {
-		return err
+		return nil, errors.Wrapf(err, "failed to create client for Cluster %s/%s", cluster.Namespace, cluster.Name)
 	}
-	kubeconf, err := ioutil.TempFile("", "kubeconfig")
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	defer os.Remove(kubeconf.Name())
-	if err := ioutil.WriteFile(kubeconf.Name(), data, os.FileMode(0644)); err != nil {
-		return errors.WithStack(err)
-	}
-	return wait.PollImmediate(5*time.Second, 5*time.Minute, func() (bool, error) {
-		cmd := exec.Command("kubectl",
-			"--kubeconfig", kubeconf.Name(),
-			"get",
-			"po",
-			"--namespace", "kube-system",
-			"--selector", "component=etcd",
-			"--output", "custom-columns=PHASE:.status.phase",
-			"--no-headers",
-		)
-		out, err := cmd.Output()
-		if err != nil {
-			return false, errors.WithStack(err)
-		}
-		lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
-		idCount := 0
-		for _, l := range lines {
-			item := string(bytes.TrimSpace(l))
-			if len(item) == 0 {
-				continue
-			}
-			if strings.Contains(item, "Running") {
-				idCount++
-			}
-		}
-		return idCount >= expected, nil
-	})
+
+	return ret, nil
 }
 
-func createTestControlPlane(clusterName, namespace, version string, numberOfControlPlanes int) error {
-	if err := setupClusterObject(clusterName, namespace); err != nil {
-		return err
-	}
-	for i := 0; i < numberOfControlPlanes; i++ {
-		if err := createNode(clusterName, controlPlaneNodeType, namespace, version, i); err != nil {
-			return err
-		}
-	}
-	// wait for provider ID on all control planes before creating workerss
-	fmt.Println("Waiting for up to 10 minutes for the provider IDs to appear on the machines")
-	if err := waitForProviderIDOnMachines(clusterName, namespace, numberOfControlPlanes); err != nil {
-		return err
-	}
-	return nil
-}
-
-func createWorkers(clusterName, namespace, version string, numberOfWorkers int) error {
-	for i := 0; i < numberOfWorkers; i++ {
-		if err := createNode(clusterName, workerNodeType, namespace, version, i); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func createMachineDeployment(clusterName, namespace, version string, replicas int) error {
-	out, err := capdctl("machine-deployment",
-		"--name", nodeName(clusterName, "machine-deployment", 0),
-		"--namespace", namespace,
-		"--cluster-name", clusterName,
-		"--kubelet-version", version,
-		"--replicas", fmt.Sprintf("%d", replicas))
-	if err != nil {
-		return err
-	}
-	return pipeToKubectlApply(bytes.NewReader(out))
-}
-
-func setupClusterObject(clusterName, namespace string) error {
-	out, err := capdctl("cluster", "--cluster-name", clusterName, "--namespace", namespace)
-	if err != nil {
-		return err
-	}
-	return pipeToKubectlApply(bytes.NewReader(out))
-}
-
-func createNode(clusterName, nodeType, namespace, version string, count int) error {
-	out, err := capdctl(nodeType,
-		"--name", nodeName(clusterName, nodeType, count),
-		"--namespace", namespace,
-		"--cluster-name", clusterName,
-		"--version", version)
-	if err != nil {
-		return err
-	}
-	return pipeToKubectlApply(bytes.NewReader(out))
-}
-
-func nodeName(clusterName, kind string, number int) string {
-	if number == 0 {
-		return fmt.Sprintf("%s-%s", clusterName, kind)
-	}
-	return fmt.Sprintf("%s-%s%d", clusterName, kind, number)
-}
-
-// secretName generates the name of the kubeconfig secret stored on the management cluster
-func secretName(clusterName string) string {
-	return remote.KubeConfigSecretName(clusterName)
-}
-
-func handleErr(err error) string {
-	if e, ok := err.(*exec.ExitError); ok {
-		return string(e.Stderr)
-	}
-	return err.Error()
-}
-
-func setupManagementCluster(t *testing.T) {
-	t.Helper()
-	if _, err := capdctl("setup", "-capd-image", capdImageName, "-capi-image", capiImageName, "-cluster-name", managementClusterName); err != nil {
-		t.Fatal(handleErr(err))
-	}
-}
-
-func pipeToKubectlApply(reader io.Reader) error {
-	_, err := kubectl(reader, managementClusterName, "apply", "-f", "-")
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func capdctl(args ...string) ([]byte, error) {
-	cmd := exec.Command(capdctlBinary, args...)
-	return cmd.Output()
-}
-
-// TODO this input is not right...
-func kubectl(input io.Reader, cluster string, args ...string) ([]byte, error) {
-	path := kubeconfigPath(cluster)
-	args = append(args, "--kubeconfig", string(path))
-	//fmt.Println("kubectl", args)
-	cmd := exec.Command("kubectl", args...)
-	if input != nil {
-		stdin, err := cmd.StdinPipe()
-		if err != nil {
-			return nil, err
-		}
-		go func() {
-			// TODO: i guess we'll just ignore these errors
-			defer stdin.Close()
-			io.Copy(stdin, input)
-		}()
-	}
-	return cmd.Output()
+func runCommand(command string, args ...string) error {
+	cmd := exec.Command(command, args...)
+	out, err := cmd.Output()
+	fmt.Fprintln(GinkgoWriter, string(out))
+	return err
 }
 
 func kubeconfigPath(clusterName string) string {
 	home := os.Getenv("HOME")
 	return fmt.Sprintf("%s/.kube/kind-config-%s", home, clusterName)
 }
-*/
