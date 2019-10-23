@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/imdario/mergo"
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/logging"
 	"github.com/vmware/cluster-api-upgrade-tool/pkg/upgrade"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/yaml"
 )
 
@@ -26,7 +28,9 @@ func newLogger() logr.Logger {
 
 func main() {
 	configFile := ""
-	configFromFlags := upgrade.Config{}
+	configFromFlags := upgrade.Config{
+		MachineTimeout: metav1.Duration{Duration: 15 * time.Minute},
+	}
 
 	root := &cobra.Command{
 		Use:   os.Args[0],
@@ -124,6 +128,13 @@ func main() {
 		"bootstrap-patches",
 		"",
 		"JSON patch expression of patches to apply to the machine's bootstrap resource (optional)",
+	)
+
+	root.Flags().DurationVar(
+		&configFromFlags.MachineTimeout.Duration,
+		"machine-timeout",
+		configFromFlags.MachineTimeout.Duration,
+		"How long to wait for a new Machine to be ready",
 	)
 
 	if err := root.Execute(); err != nil {
