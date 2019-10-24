@@ -56,20 +56,13 @@ lint-full: $(GOLANGCI_LINT) ## Run slower linters to detect possible issues
 ## Testing
 ## --------------------------------------
 
-TESTCASE ?=
-TEST_ARGS =
-
-ifdef TESTCASE
-override TEST_ARGS = -run $(TESTCASE)
-endif
-
 .PHONY: test
 test:  ## Run unit tests
 	go test ./...
 
 .PHONY: integration-test
 integration-test: ## Run integration tests
-	go test -tags integration -count=1 -v -timeout=20m $(TEST_ARGS) ./test/integration
+	cd test/integration; go test -count=1 -ginkgo.v -v -timeout=20m $(TEST_ARGS)
 
 
 ## --------------------------------------
@@ -126,6 +119,7 @@ release-binary: $(RELEASE_DIR)
 modules: ## Runs go mod to ensure proper vendoring.
 	go mod tidy
 	cd $(TOOLS_DIR); go mod tidy
+	cd test/integration; go mod tidy
 
 
 ## --------------------------------------
