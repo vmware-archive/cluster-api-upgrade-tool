@@ -472,7 +472,7 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		deleteMachineInterval = 10 * time.Second
 		deleteMachineTimeout  = 5 * time.Minute
 	)
-	u.log.Info("Deleting existing machine", "namespace", machine.Namespace, "name", machine.Name)
+	log.Info("Deleting existing machine")
 	err = wait.PollImmediate(deleteMachineInterval, deleteMachineTimeout, func() (bool, error) {
 		// TODO plumb a context down to here instead of using TODO
 		if err := u.managementClusterClient.Delete(context.TODO(), machine); err != nil {
@@ -482,12 +482,37 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		return true, nil
 	})
 	if err != nil {
-		return errors.Wrapf(err, "timed out deleting machine %s/%s", machine.Namespace, machine.Name)
+		return errors.Wrapf(err, "timed out asking to delete machine %s/%s", machine.Namespace, machine.Name)
+	}
+
+	log.Info("Waiting for machine to be deleted")
+	err = wait.PollImmediate(deleteMachineInterval, deleteMachineTimeout, func() (bool, error) {
+		// TODO plumb a context down to here instead of using TODO
+		var tempMachine clusterv1.Machine
+		key := ctrlclient.ObjectKey{
+			Namespace: machine.Namespace,
+			Name:      machine.Name,
+		}
+		if err := u.managementClusterClient.Get(context.TODO(), key, &tempMachine); apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, nil
+	})
+	if err != nil {
+		return errors.Wrapf(err, "timed out waiting for machine to be deleted %s/%s", machine.Namespace, machine.Name)
 	}
 
 	// remove node from apiEndpoints in Kubeadm config map
-	if err := u.removeNodeFromKubeadmConfigMap(oldHostName); err != nil {
-		return err
+	log.Info("Removing machine from kubeadm ConfigMap")
+	err = wait.PollImmediate(deleteMachineInterval, deleteMachineTimeout, func() (bool, error) {
+		if err := u.removeNodeFromKubeadmConfigMap(oldHostName); err != nil {
+			log.Error(err, "error removing machine from kubeadm ConfigMap")
+			return false, nil
+		}
+		return true, nil
+	})
+	if err != nil {
+		return errors.Wrapf(err, "timed out removing machine %s/%s from kubeadm ConfigMap", machine.Namespace, machine.Name)
 	}
 
 	return nil
