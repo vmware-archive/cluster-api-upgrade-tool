@@ -175,6 +175,20 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 		return errors.New("Found 0 control plane machines")
 	}
 
+	// Begin the upgrade by reconciling the kubeadm ConfigMap's ClusterStatus.APIEndpoints, just in case the data
+	// is out of sync.
+	u.log.Info("Listing workload cluster Nodes")
+	nodeList, err := u.targetKubernetesClient.CoreV1().Nodes().List(metav1.ListOptions{})
+	if err != nil {
+		return errors.Wrap(err, "error listing workload cluster nodes")
+	}
+	u.log.Info("Reconciling kubeadm ConfigMap's ClusterStatus.APIEndpoints")
+	if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
+		return reconcileKubeadmConfigMapClusterStatusAPIEndpoints(in, nodeList, machines)
+	}); err != nil {
+		return errors.Wrap(err, "error reconciling kubeadm ConfigMap")
+	}
+
 	err = u.updateKubeletConfigMapIfNeeded(u.desiredVersion)
 	if err != nil {
 		return err
@@ -196,7 +210,9 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	}
 
 	u.log.Info("Updating kubernetes version")
-	if err := u.updateAndUploadKubeadmKubernetesVersion(); err != nil {
+	if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
+		return updateKubeadmKubernetesVersion(in, "v"+u.desiredVersion.String())
+	}); err != nil {
 		return err
 	}
 
@@ -229,6 +245,23 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 		if err := helper.Patch(context.TODO(), &replacement); err != nil {
 			return err
 		}
+	}
+
+	u.log.Info("Re-listing control plane Machines")
+	machines, err = u.listMachines()
+	if err != nil {
+		return errors.Wrap(err, "error listing control plane machines")
+	}
+	u.log.Info("Re-listing workload cluster Nodes")
+	nodeList, err = u.targetKubernetesClient.CoreV1().Nodes().List(metav1.ListOptions{})
+	if err != nil {
+		return errors.Wrap(err, "error listing workload cluster nodes")
+	}
+	u.log.Info("Re-reconciling kubeadm ConfigMap's ClusterStatus.APIEndpoints")
+	if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
+		return reconcileKubeadmConfigMapClusterStatusAPIEndpoints(in, nodeList, machines)
+	}); err != nil {
+		return errors.Wrap(err, "error reconciling kubeadm ConfigMap")
 	}
 
 	return nil
@@ -505,7 +538,10 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 	// remove node from apiEndpoints in Kubeadm config map
 	log.Info("Removing machine from kubeadm ConfigMap")
 	err = wait.PollImmediate(deleteMachineInterval, deleteMachineTimeout, func() (bool, error) {
-		if err := u.removeNodeFromKubeadmConfigMap(oldHostName); err != nil {
+		if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
+			return removeNodeFromKubeadmConfigMapClusterStatusAPIEndpoints(in, oldHostName)
+		}); err != nil {
+
 			log.Error(err, "error removing machine from kubeadm ConfigMap")
 			return false, nil
 		}
@@ -1005,15 +1041,13 @@ func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, a
 	return stdout, stderr, err
 }
 
-// updateAndUploadKubeadmKubernetesVersion updates the Kubernetes version stored in the kubeadm configmap. This is
-// required so that new Machines joining the cluster use the correct Kubernetes version as part of the upgrade.
-func (u *ControlPlaneUpgrader) updateAndUploadKubeadmKubernetesVersion() error {
+func (u *ControlPlaneUpgrader) updateKubeadmConfigMap(f func(in *v1.ConfigMap) (*v1.ConfigMap, error)) error {
 	original, err := u.targetKubernetesClient.CoreV1().ConfigMaps(metav1.NamespaceSystem).Get(kubeadmConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		return errors.Wrap(err, "error getting kubeadm configmap from target cluster")
 	}
 
-	updated, err := updateKubeadmKubernetesVersion(original, "v"+u.desiredVersion.String())
+	updated, err := f(original)
 	if err != nil {
 		return err
 	}
@@ -1025,24 +1059,8 @@ func (u *ControlPlaneUpgrader) updateAndUploadKubeadmKubernetesVersion() error {
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) removeNodeFromKubeadmConfigMap(nodeName string) error {
-	original, err := u.targetKubernetesClient.CoreV1().ConfigMaps(metav1.NamespaceSystem).Get(kubeadmConfigMapName, metav1.GetOptions{})
-	if err != nil {
-		return errors.Wrap(err, "error getting kubeadm configmap from target cluster")
-	}
-
-	updated, err := removeNodeFromClusterStatus(original, nodeName)
-	if err != nil {
-		return err
-	}
-
-	if _, err = u.targetKubernetesClient.CoreV1().ConfigMaps(metav1.NamespaceSystem).Update(updated); err != nil {
-		return errors.Wrap(err, "error updating kubeadm ConfigMap")
-	}
-
-	return nil
-}
-
+// updateKubeadmKubernetesVersion updates the Kubernetes version stored in the kubeadm configmap. This is
+// // required so that new Machines joining the cluster use the correct Kubernetes version as part of the upgrade.
 func updateKubeadmKubernetesVersion(original *v1.ConfigMap, version string) (*v1.ConfigMap, error) {
 	cm := original.DeepCopy()
 
@@ -1224,17 +1242,30 @@ func (u *ControlPlaneUpgrader) isReady(nodeHostname string) bool {
 	return true
 }
 
-func removeNodeFromClusterStatus(original *v1.ConfigMap, nodeName string) (*v1.ConfigMap, error) {
-	cm := original.DeepCopy()
-
+// extractKubeadmConfigMapClusterStatus returns the ClusterStatus field from the kubeadm ConfigMap as an
+// *unstructured.Unstructured.
+func extractKubeadmConfigMapClusterStatus(in *v1.ConfigMap) (*unstructured.Unstructured, error) {
 	clusterStatus := &unstructured.Unstructured{}
 
-	if cs, ok := cm.Data["ClusterStatus"]; !ok {
+	rawClusterStatus, ok := in.Data["ClusterStatus"]
+	if !ok {
 		return nil, errors.New("ClusterStatus not found in kubeadm ConfigMap")
-	} else {
-		if err := yaml.Unmarshal([]byte(cs), &clusterStatus); err != nil {
-			return nil, errors.Wrap(err, "error decoding kubeadm ClusterStatus object")
-		}
+	}
+	if err := yaml.Unmarshal([]byte(rawClusterStatus), &clusterStatus); err != nil {
+		return nil, errors.Wrap(err, "error decoding kubeadm ClusterStatus object")
+	}
+
+	return clusterStatus, nil
+}
+
+// removeNodeFromKubeadmConfigMapClusterStatusAPIEndpoints removes an entry from ClusterStatus.APIEndpoints in the kubeadm
+// ConfigMap.
+func removeNodeFromKubeadmConfigMapClusterStatusAPIEndpoints(original *v1.ConfigMap, nodeName string) (*v1.ConfigMap, error) {
+	cm := original.DeepCopy()
+
+	clusterStatus, err := extractKubeadmConfigMapClusterStatus(original)
+	if err != nil {
+		return nil, err
 	}
 
 	endpoints, _, err := unstructured.NestedMap(clusterStatus.UnstructuredContent(), "apiEndpoints")
@@ -1242,7 +1273,9 @@ func removeNodeFromClusterStatus(original *v1.ConfigMap, nodeName string) (*v1.C
 		return nil, err
 	}
 
+	// Remove node
 	delete(endpoints, nodeName)
+
 	err = unstructured.SetNestedMap(clusterStatus.UnstructuredContent(), endpoints, "apiEndpoints")
 	if err != nil {
 		return nil, err
@@ -1256,4 +1289,69 @@ func removeNodeFromClusterStatus(original *v1.ConfigMap, nodeName string) (*v1.C
 	cm.Data["ClusterStatus"] = string(updated)
 
 	return cm, nil
+}
+
+// reconcileKubeadmConfigMapClusterStatusAPIEndpoints reconciles ClusterStatus.APIEndpoints in the kubeadm ConfigMap by
+// comparing the active Machines with active Nodes. Any Node that does not have a matching Machine (by provider ID) is
+// removed.
+func reconcileKubeadmConfigMapClusterStatusAPIEndpoints(in *v1.ConfigMap, nodeList *v1.NodeList, machines []*clusterv1.Machine) (*v1.ConfigMap, error) {
+	cm := in.DeepCopy()
+
+	clusterStatus, err := extractKubeadmConfigMapClusterStatus(in)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoints, _, err := unstructured.NestedMap(clusterStatus.UnstructuredContent(), "apiEndpoints")
+	if err != nil {
+		return nil, err
+	}
+
+	// Record the provider IDs for all the machines
+	machineProviderIDs := sets.NewString()
+	for _, m := range machines {
+		id, err := noderefutil.NewProviderID(*m.Spec.ProviderID)
+		if err != nil {
+			continue
+		}
+
+		// Store it formatted as $cloudProvider||$id to make searching in the set easier
+		machineProviderIDs.Insert(fmt.Sprintf("%s||%s", id.CloudProvider(), id.ID()))
+	}
+
+	// Reconcile with the nodes
+	for _, node := range nodeList.Items {
+		// Skip over non-control plane nodes
+		if _, found := node.Labels["node-role.kubernetes.io/master"]; !found {
+			continue
+		}
+
+		nodeProviderID, err := noderefutil.NewProviderID(node.Spec.ProviderID)
+		if err != nil {
+			continue
+		}
+
+		// Match the formatting we used above - $cloudProvider||$id
+		formatted := fmt.Sprintf("%s||%s", nodeProviderID.CloudProvider(), nodeProviderID.ID())
+
+		// If the node is deleted, or there isn't a machine with a matching provider ID, remove it.
+		if !node.DeletionTimestamp.IsZero() || !machineProviderIDs.Has(formatted) {
+			delete(endpoints, hostnameForNode(&node))
+		}
+	}
+
+	err = unstructured.SetNestedMap(clusterStatus.UnstructuredContent(), endpoints, "apiEndpoints")
+	if err != nil {
+		return nil, err
+	}
+
+	updated, err := yaml.Marshal(clusterStatus)
+	if err != nil {
+		return nil, errors.Wrap(err, "error encoding kubeadm ClusterStatus object")
+	}
+
+	cm.Data["ClusterStatus"] = string(updated)
+
+	return cm, nil
+
 }
