@@ -177,16 +177,8 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 
 	// Begin the upgrade by reconciling the kubeadm ConfigMap's ClusterStatus.APIEndpoints, just in case the data
 	// is out of sync.
-	u.log.Info("Listing workload cluster Nodes")
-	nodeList, err := u.targetKubernetesClient.CoreV1().Nodes().List(metav1.ListOptions{})
-	if err != nil {
-		return errors.Wrap(err, "error listing workload cluster nodes")
-	}
-	u.log.Info("Reconciling kubeadm ConfigMap's ClusterStatus.APIEndpoints")
-	if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
-		return reconcileKubeadmConfigMapClusterStatusAPIEndpoints(in, nodeList, machines)
-	}); err != nil {
-		return errors.Wrap(err, "error reconciling kubeadm ConfigMap")
+	if err := u.reconcileKubeadmConfigMapAPIEndpoints(machines); err != nil {
+		return err
 	}
 
 	err = u.updateKubeletConfigMapIfNeeded(u.desiredVersion)
@@ -252,12 +244,22 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	if err != nil {
 		return errors.Wrap(err, "error listing control plane machines")
 	}
-	u.log.Info("Re-listing workload cluster Nodes")
-	nodeList, err = u.targetKubernetesClient.CoreV1().Nodes().List(metav1.ListOptions{})
+
+	if err := u.reconcileKubeadmConfigMapAPIEndpoints(machines); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) reconcileKubeadmConfigMapAPIEndpoints(machines []*clusterv1.Machine) error {
+	u.log.Info("Listing workload cluster Nodes")
+	nodeList, err := u.targetKubernetesClient.CoreV1().Nodes().List(metav1.ListOptions{})
 	if err != nil {
 		return errors.Wrap(err, "error listing workload cluster nodes")
 	}
-	u.log.Info("Re-reconciling kubeadm ConfigMap's ClusterStatus.APIEndpoints")
+
+	u.log.Info("Reconciling kubeadm ConfigMap's ClusterStatus.APIEndpoints")
 	if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
 		return reconcileKubeadmConfigMapClusterStatusAPIEndpoints(in, nodeList, machines)
 	}); err != nil {
@@ -1060,7 +1062,7 @@ func (u *ControlPlaneUpgrader) updateKubeadmConfigMap(f func(in *v1.ConfigMap) (
 }
 
 // updateKubeadmKubernetesVersion updates the Kubernetes version stored in the kubeadm configmap. This is
-// // required so that new Machines joining the cluster use the correct Kubernetes version as part of the upgrade.
+// required so that new Machines joining the cluster use the correct Kubernetes version as part of the upgrade.
 func updateKubeadmKubernetesVersion(original *v1.ConfigMap, version string) (*v1.ConfigMap, error) {
 	cm := original.DeepCopy()
 
