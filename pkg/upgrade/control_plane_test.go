@@ -17,6 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/pointer"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
 	"sigs.k8s.io/yaml"
 )
 
@@ -230,4 +232,140 @@ func TestPatchRuntimeObject(t *testing.T) {
 	patchedNamespace := patched.(*v1.Namespace)
 	assert.Equal(t, map[string]string{"hello": "world"}, patchedNamespace.Labels)
 
+}
+
+func TestReconcileKubeadmConfigMapClusterStatusAPIEndpoints(t *testing.T) {
+	now := metav1.Now()
+
+	deletedNode := v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "deleted",
+			DeletionTimestamp: &now,
+			Labels:            map[string]string{"node-role.kubernetes.io/master": ""},
+		},
+	}
+
+	nodeWithoutMatchingProviderID := v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "to-be-removed",
+			Labels: map[string]string{"node-role.kubernetes.io/master": ""},
+		},
+		Spec: v1.NodeSpec{
+			ProviderID: "provider://no-match-here",
+		},
+		Status: v1.NodeStatus{
+			Addresses: []v1.NodeAddress{
+				{
+					Type:    v1.NodeHostName,
+					Address: "not-a-match",
+				},
+			},
+		},
+	}
+
+	node1WithMatchingProviderID := v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-1",
+			Labels: map[string]string{"node-role.kubernetes.io/master": ""},
+		},
+		Spec: v1.NodeSpec{
+			ProviderID: "provider://zone/id-1",
+		},
+		Status: v1.NodeStatus{
+			Addresses: []v1.NodeAddress{
+				{
+					Type:    v1.NodeHostName,
+					Address: "match-1",
+				},
+			},
+		},
+	}
+
+	node2WithMatchingProviderID := v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-2",
+			Labels: map[string]string{"node-role.kubernetes.io/master": ""},
+		},
+		Spec: v1.NodeSpec{
+			ProviderID: "provider://zone/id-2",
+		},
+		Status: v1.NodeStatus{
+			Addresses: []v1.NodeAddress{
+				{
+					Type:    v1.NodeHostName,
+					Address: "match-2",
+				},
+			},
+		},
+	}
+
+	machine1 := clusterv1.Machine{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "foo",
+			Name:      "one",
+		},
+		Spec: clusterv1.MachineSpec{
+			ProviderID: pointer.StringPtr("provider://id-1"),
+		},
+	}
+
+	machine2 := clusterv1.Machine{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "foo",
+			Name:      "two",
+		},
+		Spec: clusterv1.MachineSpec{
+			ProviderID: pointer.StringPtr("provider://id-2"),
+		},
+	}
+
+	originalClusterStatusYAML := `apiEndpoints:
+  match-1:
+    advertiseAddress: 10.0.0.197
+    bindPort: 6443
+  not-a-match:
+    advertiseAddress: 10.0.0.111
+    bindPort: 6443
+  match-2:
+    advertiseAddress: 10.0.0.227
+    bindPort: 6443
+apiVersion: kubeadm.k8s.io/v1beta1
+kind: ClusterStatus
+`
+
+	originalCM := &v1.ConfigMap{
+		Data: map[string]string{
+			"ClusterStatus": originalClusterStatusYAML,
+		},
+	}
+
+	nodeList := &v1.NodeList{
+		Items: []v1.Node{deletedNode, nodeWithoutMatchingProviderID, node1WithMatchingProviderID, node2WithMatchingProviderID},
+	}
+
+	machines := []*clusterv1.Machine{&machine1, &machine2}
+
+	updatedCM, err := reconcileKubeadmConfigMapClusterStatusAPIEndpoints(originalCM, nodeList, machines)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	expectedCM := &v1.ConfigMap{
+		Data: map[string]string{
+			"ClusterStatus": `apiEndpoints:
+  match-1:
+    advertiseAddress: 10.0.0.197
+    bindPort: 6443
+  match-2:
+    advertiseAddress: 10.0.0.227
+    bindPort: 6443
+apiVersion: kubeadm.k8s.io/v1beta1
+kind: ClusterStatus
+`,
+		},
+	}
+
+	if e, a := expectedCM.Data["ClusterStatus"], updatedCM.Data["ClusterStatus"]; e != a {
+		t.Errorf("expected %s, got %s", e, a)
+	}
 }
