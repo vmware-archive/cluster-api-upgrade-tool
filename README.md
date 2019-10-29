@@ -1,18 +1,30 @@
 # cluster-api-upgrade-tool
 
-## WARNING
-
-This tool is a work in progress. It may have bugs. **DO NOT** use it on a production Kubernetes cluster or any cluster you can't live without.
-
-To date, we have only tested this with [Cluster API Provider for AWS](http://github.com/kubernetes-sigs/cluster-api-provider-aws) (CAPA)
-
 ## Overview
 
-This is a standalone tool to orchestrate upgrading Kubernetes clusters created by Cluster API v0.2.x / API version v1alpha2.
+This is a standalone tool to orchestrate upgrading the control plane machines of Kubernetes clusters created by Cluster
+API v0.2.x / API version v1alpha2.
 
-Our goal is to ultimately add this upgrade logic to Cluster API itself, but given that v1alpha2 doesn't easily lend itself to
-handling upgrades of control plane machines, we decided to build a temporarily tool that can fill that gap. Once Cluster API
-supports full lifecycle management of control planes, we plan to sunset this tool.
+Our goal is to ultimately add this upgrade logic to Cluster API itself, but given that v1alpha2 doesn't easily lend
+itself to handling upgrades of control plane machines, we decided to build a temporarily tool that can fill that gap.
+Once Cluster API supports full lifecycle management of control planes, we plan to sunset this tool.
+
+We have tested this with [Cluster API Provider for AWS](http://github.com/kubernetes-sigs/cluster-api-provider-aws)
+(CAPA), and [Cluster API Provider for Docker](http://github.com/kubernetes-sigs/cluster-api-provider-docker) (CAPD).
+
+## Warning!
+
+While we've made every effort to build a robust tool that can perform upgrades correctly, including resuming a
+partially-completed or interrupted upgrade, there is a chance that things might go awry. Therefore:
+
+**BACK UP** your control plane before you attempt an upgrade. This may include:
+
+- `Cluster` resource
+- `Machine` resources
+- `KubeadmConfig` resources
+- `Secret` resources containing the certificates and kubeconfig for your cluster
+- Taking a full snapshot of the workload cluster's etcd database
+- Taking a full backup of the workload cluster using a Kubernetes backup tool, such as [Velero](https://velero.io)
 
 ## Try it out
 
@@ -116,7 +128,10 @@ labels field:
 
 ## Contributing
 
-The cluster-api-upgrade-tool project team welcomes contributions from the community. If you wish to contribute code and you have not signed our contributor license agreement (CLA), our bot will update the issue when you open a Pull Request. For any questions about the CLA process, please refer to our [FAQ](https://cla.vmware.com/faq).
+The cluster-api-upgrade-tool project team welcomes contributions from the community. If you wish to contribute code and
+you have not signed our contributor license agreement (CLA), our bot will update the issue when you open a Pull Request.
+For any questions about the CLA process, please refer to our [FAQ](https://cla.vmware.com/faq).
 
 ## License
+
 Apache 2.0
