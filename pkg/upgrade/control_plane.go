@@ -192,7 +192,7 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	}
 
 	u.log.Info("Checking etcd health")
-	if err := u.etcdClusterHealthCheck(time.Minute * 1); err != nil {
+	if err := u.etcdClusterHealthCheck(15 * time.Second); err != nil {
 		return err
 	}
 
@@ -615,6 +615,18 @@ func (u *ControlPlaneUpgrader) updateMachines(machines []*clusterv1.Machine) err
 		}
 
 		// TODO skip if the bootstrap ref is not a KubeadmConfig
+
+		log.Info("Checking etcd health")
+		err := wait.PollImmediate(10*time.Second, 5*time.Minute, func() (bool, error) {
+			if err := u.etcdClusterHealthCheck(15 * time.Second); err != nil {
+				log.Error(err, "etcd health check failed - retrying")
+				return false, nil
+			}
+			return true, nil
+		})
+		if err != nil {
+			return errors.Wrap(err, "timed out waiting for etcd health check to pass")
+		}
 
 		replacementMachineName := generateReplacementMachineName(machine.Name, u.upgradeID)
 
