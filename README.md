@@ -41,7 +41,8 @@ The following examples assume you have `$KUBECONFIG` set.
 ./bin/cluster-api-upgrade-tool \
   --cluster-namespace <Target cluster namespace> \
   --cluster-name <Target cluster name> \
-  --kubernetes-version <Desired kubernetes version>
+  --kubernetes-version <Desired kubernetes version> \
+  --upgrade-id <desired upgrade id, such as a timestamp or some other unique identifier>
 ```
 
 ### Specify options with a config file
@@ -88,11 +89,12 @@ Flags:
       --cluster-name string             The name of target cluster (required)
       --cluster-namespace string        The namespace of target cluster (required)
       --config string                   Path to a config file in yaml or json format
-  -h, --help                            help for ./bin/cluster-api-upgrade-tool
+  -h, --help                            help for cluster-api-upgrade-tool
       --infrastructure-patches string   JSON patch expression of patches to apply to the machine's infrastructure resource (optional)
       --kubeconfig string               The kubeconfig path for the management cluster
       --kubernetes-version string       Desired kubernetes version to upgrade to (required)
-      --upgrade-id string               Unique identifier used to resume a partial upgrade (optional)
+      --machine-timeout duration        How long to wait for a new Machine to be ready (default 15m0s)
+      --upgrade-id string               Unique identifier used to resume a partial upgrade (required)
 ```
 
 ### Patches
