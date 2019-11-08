@@ -56,7 +56,7 @@ targetCluster:
 kubernetesVersion: v1.15.3
 upgradeID: 1234
 patches:
-  infrastructure: '[{ "op": "replace", "path": "/spec/ami", "value": "ami-123456789" }]'
+  infrastructure: '[{ "op": "replace", "path": "/spec/ami/id", "value": "ami-123456789" }]'
 ```
 
 Run an upgrade with the following command:
@@ -104,7 +104,7 @@ bootstrap resources. An example use for this could be to change the image ID in 
 machine resource. For example, to change the AMI for an `AWSMachine` for the AWS provider, you would use the following:
 
 ```
-[{ "op": "replace", "path": "/spec/ami", "value": "ami-123456789" }]
+[{ "op": "replace", "path": "/spec/ami/id", "value": "ami-123456789" }]
 ```
 
 When specifying patches, make sure you do not replace an entire field such as `metadata` or `spec` unless you include
