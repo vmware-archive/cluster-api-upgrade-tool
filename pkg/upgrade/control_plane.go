@@ -458,6 +458,9 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		desiredVersion := u.desiredVersion.String()
 		replacementMachine.Spec.Version = &desiredVersion
 
+		// clear status to ensure the provider can't match the new machine to any existing machine
+		replacementMachine.Status = clusterv1.MachineStatus{}
+
 		log.Info("Creating new machine")
 		if err := u.managementClusterClient.Create(context.TODO(), replacementMachine); err != nil {
 			return errors.Wrapf(err, "Error creating machine: %s", replacementMachine.Name)
