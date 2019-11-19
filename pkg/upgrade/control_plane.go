@@ -177,7 +177,7 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 
 	// Begin the upgrade by reconciling the kubeadm ConfigMap's ClusterStatus.APIEndpoints, just in case the data
 	// is out of sync.
-	if err := u.reconcileKubeadmConfigMapAPIEndpoints(machines); err != nil {
+	if err := u.reconcileKubeadmConfigMapAPIEndpoints(); err != nil {
 		return err
 	}
 
@@ -239,20 +239,14 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 		}
 	}
 
-	u.log.Info("Re-listing control plane Machines")
-	machines, err = u.listMachines()
-	if err != nil {
-		return errors.Wrap(err, "error listing control plane machines")
-	}
-
-	if err := u.reconcileKubeadmConfigMapAPIEndpoints(machines); err != nil {
+	if err := u.reconcileKubeadmConfigMapAPIEndpoints(); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) reconcileKubeadmConfigMapAPIEndpoints(machines []*clusterv1.Machine) error {
+func (u *ControlPlaneUpgrader) reconcileKubeadmConfigMapAPIEndpoints() error {
 	u.log.Info("Listing workload cluster Nodes")
 	nodeList, err := u.targetKubernetesClient.CoreV1().Nodes().List(metav1.ListOptions{})
 	if err != nil {
@@ -261,7 +255,7 @@ func (u *ControlPlaneUpgrader) reconcileKubeadmConfigMapAPIEndpoints(machines []
 
 	u.log.Info("Reconciling kubeadm ConfigMap's ClusterStatus.APIEndpoints")
 	if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
-		return reconcileKubeadmConfigMapClusterStatusAPIEndpoints(in, nodeList, machines)
+		return reconcileKubeadmConfigMapClusterStatusAPIEndpoints(in, nodeList)
 	}); err != nil {
 		return errors.Wrap(err, "error reconciling kubeadm ConfigMap")
 	}
@@ -1306,9 +1300,9 @@ func removeNodeFromKubeadmConfigMapClusterStatusAPIEndpoints(original *v1.Config
 }
 
 // reconcileKubeadmConfigMapClusterStatusAPIEndpoints reconciles ClusterStatus.APIEndpoints in the kubeadm ConfigMap by
-// comparing the active Machines with active Nodes. Any Node that does not have a matching Machine (by provider ID) is
-// removed.
-func reconcileKubeadmConfigMapClusterStatusAPIEndpoints(in *v1.ConfigMap, nodeList *v1.NodeList, machines []*clusterv1.Machine) (*v1.ConfigMap, error) {
+// comparing the active Nodes with the entries in the APIEndpoints map. Any map entry that does not have a matching Node
+// is removed.
+func reconcileKubeadmConfigMapClusterStatusAPIEndpoints(in *v1.ConfigMap, nodeList *v1.NodeList) (*v1.ConfigMap, error) {
 	cm := in.DeepCopy()
 
 	clusterStatus, err := extractKubeadmConfigMapClusterStatus(in)
@@ -1321,36 +1315,14 @@ func reconcileKubeadmConfigMapClusterStatusAPIEndpoints(in *v1.ConfigMap, nodeLi
 		return nil, err
 	}
 
-	// Record the provider IDs for all the machines
-	machineProviderIDs := sets.NewString()
-	for _, m := range machines {
-		id, err := noderefutil.NewProviderID(*m.Spec.ProviderID)
-		if err != nil {
-			continue
-		}
-
-		// Store it formatted as $cloudProvider||$id to make searching in the set easier
-		machineProviderIDs.Insert(fmt.Sprintf("%s||%s", id.CloudProvider(), id.ID()))
+	nodeNames := sets.NewString()
+	for _, node := range nodeList.Items {
+		nodeNames.Insert(node.Name)
 	}
 
-	// Reconcile with the nodes
-	for _, node := range nodeList.Items {
-		// Skip over non-control plane nodes
-		if _, found := node.Labels["node-role.kubernetes.io/master"]; !found {
-			continue
-		}
-
-		nodeProviderID, err := noderefutil.NewProviderID(node.Spec.ProviderID)
-		if err != nil {
-			continue
-		}
-
-		// Match the formatting we used above - $cloudProvider||$id
-		formatted := fmt.Sprintf("%s||%s", nodeProviderID.CloudProvider(), nodeProviderID.ID())
-
-		// If the node is deleted, or there isn't a machine with a matching provider ID, remove it.
-		if !node.DeletionTimestamp.IsZero() || !machineProviderIDs.Has(formatted) {
-			delete(endpoints, hostnameForNode(&node))
+	for nodeName := range endpoints {
+		if !nodeNames.Has(nodeName) {
+			delete(endpoints, nodeName)
 		}
 	}
 
