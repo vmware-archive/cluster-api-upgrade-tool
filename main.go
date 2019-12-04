@@ -130,6 +130,13 @@ func main() {
 		"JSON patch expression of patches to apply to the machine's bootstrap resource (optional)",
 	)
 
+	root.Flags().StringVar(
+		&configFromFlags.Patches.KubeadmConfigMap,
+		"kubeadm-configmap-patches",
+		"",
+		"JSON patch expression of patches to apply to the kubeadm-config ConfigMap (optional)",
+	)
+
 	root.Flags().DurationVar(
 		&configFromFlags.MachineTimeout.Duration,
 		"machine-timeout",
