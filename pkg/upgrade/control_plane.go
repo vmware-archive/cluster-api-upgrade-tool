@@ -219,11 +219,26 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	if u.kubeadmConfigMapPatch != nil {
 		u.log.Info("Patching kubeadm ConfigMap")
 		if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
-			patched, err := patchRuntimeObject(in, u.kubeadmConfigMapPatch)
-			if err != nil {
-				return nil, errors.Wrap(err, "error patching kubeadm ConfigMap")
+
+			var clusterConfig kubeadmv1beta1.ClusterConfiguration
+			if err := yaml.Unmarshal([]byte(in.Data["ClusterConfiguration"]), &clusterConfig); err != nil {
+				return nil, errors.Wrap(err, "error decoding kubeadm ClusterConfiguration")
 			}
-			return patched.(*v1.ConfigMap), nil
+
+			patched, err := patchRuntimeObject(&clusterConfig, u.kubeadmConfigMapPatch)
+			if err != nil {
+				return nil, errors.Wrap(err, "error patching kubeadm ClusterConfiguration")
+			}
+
+			b, err := yaml.Marshal(patched)
+			if err != nil {
+				return nil, errors.Wrap(err, "error marshaling patched kubeadm ClusterConfiguration")
+			}
+
+			cm := in.DeepCopy()
+			cm.Data["ClusterConfiguration"] = string(b)
+
+			return cm, nil
 		}); err != nil {
 			return err
 		}
