@@ -82,7 +82,7 @@ Both JSON and YAML formats are supported.
 
 ```
 Usage:
-  ./bin/cluster-api-upgrade-tool [flags]
+  cluster-api-upgrade-tool [flags]
 
 Flags:
       --bootstrap-patches string        JSON patch expression of patches to apply to the machine's bootstrap resource (optional)
@@ -93,7 +93,7 @@ Flags:
       --infrastructure-patches string   JSON patch expression of patches to apply to the machine's infrastructure resource (optional)
       --kubeconfig string               The kubeconfig path for the management cluster
       --kubernetes-version string       Desired kubernetes version to upgrade to (required)
-      --machine-timeout duration        How long to wait for a new Machine to be ready (default 15m0s)
+      --machine-timeout duration        How long to wait for machine operations (create, delete) to complete (default 15m0s)
       --upgrade-id string               Unique identifier used to resume a partial upgrade (required)
 ```
 

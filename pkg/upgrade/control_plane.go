@@ -497,12 +497,10 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		}
 	}
 
-	const (
-		deleteMachineInterval = 10 * time.Second
-		deleteMachineTimeout  = 5 * time.Minute
-	)
+	const deleteMachineInterval = 10 * time.Second
+
 	log.Info("Deleting existing machine")
-	err = wait.PollImmediate(deleteMachineInterval, deleteMachineTimeout, func() (bool, error) {
+	err = wait.PollImmediate(deleteMachineInterval, u.machineTimeout, func() (bool, error) {
 		// TODO plumb a context down to here instead of using TODO
 		if err := u.managementClusterClient.Delete(context.TODO(), machine); err != nil {
 			log.Error(err, "error deleting machine")
@@ -515,7 +513,7 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 	}
 
 	log.Info("Waiting for machine to be deleted")
-	err = wait.PollImmediate(deleteMachineInterval, deleteMachineTimeout, func() (bool, error) {
+	err = wait.PollImmediate(deleteMachineInterval, u.machineTimeout, func() (bool, error) {
 		// TODO plumb a context down to here instead of using TODO
 		var tempMachine clusterv1.Machine
 		key := ctrlclient.ObjectKey{
@@ -533,7 +531,7 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 
 	// remove node from apiEndpoints in Kubeadm config map
 	log.Info("Removing machine from kubeadm ConfigMap")
-	err = wait.PollImmediate(deleteMachineInterval, deleteMachineTimeout, func() (bool, error) {
+	err = wait.PollImmediate(deleteMachineInterval, u.machineTimeout, func() (bool, error) {
 		if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
 			return removeNodeFromKubeadmConfigMapClusterStatusAPIEndpoints(in, oldHostName)
 		}); err != nil {

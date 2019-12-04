@@ -134,7 +134,7 @@ func main() {
 		&configFromFlags.MachineTimeout.Duration,
 		"machine-timeout",
 		configFromFlags.MachineTimeout.Duration,
-		"How long to wait for a new Machine to be ready",
+		"How long to wait for machine operations (create, delete) to complete",
 	)
 
 	if err := root.Execute(); err != nil {
