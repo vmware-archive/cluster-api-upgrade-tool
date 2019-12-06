@@ -68,6 +68,7 @@ type ControlPlaneUpgrader struct {
 	secretsUpdated          bool
 	infrastructurePatch     jsonpatch.Patch
 	bootstrapPatch          jsonpatch.Patch
+	kubeadmConfigMapPatch   jsonpatch.Patch
 	machineTimeout          time.Duration
 }
 
@@ -135,7 +136,7 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 	infoMessage := fmt.Sprintf("Rerun with `--upgrade-id=%s` if this upgrade fails midway and you want to retry", config.UpgradeID)
 	log.Info(infoMessage)
 
-	var infrastructurePatch, bootstrapPatch jsonpatch.Patch
+	var infrastructurePatch, bootstrapPatch, kubeadmConfigMapPatch jsonpatch.Patch
 	if len(config.Patches.Infrastructure) > 0 {
 		infrastructurePatch, err = jsonpatch.DecodePatch([]byte(config.Patches.Infrastructure))
 		if err != nil {
@@ -146,6 +147,12 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 		bootstrapPatch, err = jsonpatch.DecodePatch([]byte(config.Patches.Bootstrap))
 		if err != nil {
 			return nil, errors.Wrap(err, "error decoding bootstrap patch")
+		}
+	}
+	if len(config.Patches.KubeadmConfigMap) > 0 {
+		kubeadmConfigMapPatch, err = jsonpatch.DecodePatch([]byte(config.Patches.KubeadmConfigMap))
+		if err != nil {
+			return nil, errors.Wrap(err, "error decoding kubeadm configmap patch")
 		}
 	}
 
@@ -160,6 +167,7 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 		upgradeID:               config.UpgradeID,
 		infrastructurePatch:     infrastructurePatch,
 		bootstrapPatch:          bootstrapPatch,
+		kubeadmConfigMapPatch:   kubeadmConfigMapPatch,
 		machineTimeout:          config.MachineTimeout.Duration,
 	}, nil
 }
@@ -206,6 +214,34 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 		return updateKubeadmKubernetesVersion(in, "v"+u.desiredVersion.String())
 	}); err != nil {
 		return err
+	}
+
+	if u.kubeadmConfigMapPatch != nil {
+		u.log.Info("Patching kubeadm ConfigMap")
+		if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
+
+			var clusterConfig kubeadmv1beta1.ClusterConfiguration
+			if err := yaml.Unmarshal([]byte(in.Data["ClusterConfiguration"]), &clusterConfig); err != nil {
+				return nil, errors.Wrap(err, "error decoding kubeadm ClusterConfiguration")
+			}
+
+			patched, err := patchRuntimeObject(&clusterConfig, u.kubeadmConfigMapPatch)
+			if err != nil {
+				return nil, errors.Wrap(err, "error patching kubeadm ClusterConfiguration")
+			}
+
+			b, err := yaml.Marshal(patched)
+			if err != nil {
+				return nil, errors.Wrap(err, "error marshaling patched kubeadm ClusterConfiguration")
+			}
+
+			cm := in.DeepCopy()
+			cm.Data["ClusterConfiguration"] = string(b)
+
+			return cm, nil
+		}); err != nil {
+			return err
+		}
 	}
 
 	u.log.Info("Updating machines")

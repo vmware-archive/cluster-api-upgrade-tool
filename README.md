@@ -85,16 +85,17 @@ Usage:
   cluster-api-upgrade-tool [flags]
 
 Flags:
-      --bootstrap-patches string        JSON patch expression of patches to apply to the machine's bootstrap resource (optional)
-      --cluster-name string             The name of target cluster (required)
-      --cluster-namespace string        The namespace of target cluster (required)
-      --config string                   Path to a config file in yaml or json format
-  -h, --help                            help for cluster-api-upgrade-tool
-      --infrastructure-patches string   JSON patch expression of patches to apply to the machine's infrastructure resource (optional)
-      --kubeconfig string               The kubeconfig path for the management cluster
-      --kubernetes-version string       Desired kubernetes version to upgrade to (required)
-      --machine-timeout duration        How long to wait for machine operations (create, delete) to complete (default 15m0s)
-      --upgrade-id string               Unique identifier used to resume a partial upgrade (required)
+      --bootstrap-patches string           JSON patch expression of patches to apply to the machine's bootstrap resource (optional)
+      --cluster-name string                The name of target cluster (required)
+      --cluster-namespace string           The namespace of target cluster (required)
+      --config string                      Path to a config file in yaml or json format
+  -h, --help                               help for cluster-api-upgrade-tool
+      --infrastructure-patches string      JSON patch expression of patches to apply to the machine's infrastructure resource (optional)
+      --kubeadm-configmap-patches string   JSON patch expression of patches to apply to the kubeadm-config ConfigMap (optional)
+      --kubeconfig string                  The kubeconfig path for the management cluster
+      --kubernetes-version string          Desired kubernetes version to upgrade to (required)
+      --machine-timeout duration           How long to wait for machine operations (create, delete) to complete (default 15m0s)
+      --upgrade-id string                  Unique identifier used to resume a partial upgrade (required)
 ```
 
 ### Patches
