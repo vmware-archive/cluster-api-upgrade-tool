@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -52,6 +52,8 @@ const (
 
 	// AnnotationUpgradeID is the annotation key for an upgrade's identifier.
 	AnnotationUpgradeID = annotationPrefix + "id"
+
+	AnnotationMachineNameBase = annotationPrefix + "machine-name-base"
 )
 
 type ControlPlaneUpgrader struct {
@@ -244,6 +246,11 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 		}
 	}
 
+	// save all etcd member id corresponding to node before upgrade starts
+	if err := u.oldNodeToEtcdMemberId(time.Minute * 1); err != nil {
+		return err
+	}
+
 	u.log.Info("Updating machines")
 	if err := u.updateMachines(machines); err != nil {
 		return err
@@ -252,7 +259,7 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	u.log.Info("Removing upgrade annotations")
 	for _, m := range machines {
 		var replacement clusterv1.Machine
-		replacementName := generateReplacementMachineName(m.Name, u.upgradeID)
+		replacementName := generateReplacementMachineName(m.Annotations[AnnotationMachineNameBase], u.upgradeID)
 
 		key := ctrlclient.ObjectKey{
 			Namespace: m.Namespace,
@@ -584,65 +591,102 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) updateMachines(machines []*clusterv1.Machine) error {
-	// save all etcd member id corresponding to node before upgrade starts
-	err := u.oldNodeToEtcdMemberId(time.Minute * 1)
-	if err != nil {
-		return err
+func (u *ControlPlaneUpgrader) reconcileMachineAnnotations(log logr.Logger, machine *clusterv1.Machine) error {
+	if machine.Annotations == nil {
+		machine.Annotations = make(map[string]string)
 	}
 
+	// If upgrade ID is already present, return early
+	if machine.Annotations[AnnotationUpgradeID] != "" {
+		return nil
+	}
+
+	helper, err := patch.NewHelper(machine.DeepCopy(), u.managementClusterClient)
+	if err != nil {
+		return errors.Wrap(err, "error creating patch helper for machine annotations")
+	}
+
+	log.Info("Adding upgrade ID annotation")
+	machine.Annotations[AnnotationUpgradeID] = u.upgradeID
+
+	// Only add if it's not present
+	if _, found := machine.Annotations[AnnotationMachineNameBase]; !found {
+		log.Info("Adding machine name base annotation")
+		machine.Annotations[AnnotationMachineNameBase] = machine.Name
+	}
+
+	log.Info("Patching machine annotations")
+
+	if err := helper.Patch(context.TODO(), machine); err != nil {
+		return errors.Wrap(err, "error patching machine annotations")
+	}
+
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) shouldSkipMachine(log logr.Logger, machine *clusterv1.Machine) bool {
+	if machine.Spec.ProviderID == nil {
+		log.Info("Unable to upgrade machine as it has no spec.providerID")
+		return true
+	}
+
+	// Don't process a mismatching upgrade ID
+	if machine.Annotations[AnnotationUpgradeID] != u.upgradeID {
+		// TODO record that we're unable to upgrade because the ID is a mismatch (annotation? event?)
+		log.Info("Unable to upgrade machine - mismatching upgrade id", "machine-upgrade-id", machine.Annotations[AnnotationUpgradeID])
+		return true
+	}
+
+	baseName := machine.Annotations[AnnotationMachineNameBase]
+	if baseName == "" {
+		// should never happen
+		log.Error(errors.New("machine is missing annotation "+AnnotationMachineNameBase), "unable to upgrade machine")
+		return true
+	}
+	// Skip if this is a replacement machine for the current upgrade
+	if machine.Name == generateReplacementMachineName(baseName, u.upgradeID) {
+		log.Info("Skipping machine as it is a replacement machine for the in-process upgrade")
+		return true
+	}
+
+	if machine.Spec.Bootstrap.ConfigRef == nil {
+		log.Info("Skipping machine because spec.bootstrap.configRef is nil")
+		return true
+	}
+
+	bootstrapConfigRefGroupVersion, err := schema.ParseGroupVersion(machine.Spec.Bootstrap.ConfigRef.APIVersion)
+	if err != nil {
+		// should never happen
+		log.Error(err, "error parsing spec.bootstrap.configRef.apiVersion", "value", machine.Spec.Bootstrap.ConfigRef.APIVersion)
+		return true
+	}
+
+	if bootstrapConfigRefGroupVersion.Group != bootstrapv1.GroupVersion.Group || machine.Spec.Bootstrap.ConfigRef.Kind != "KubeadmConfig" {
+		log.Info("Skipping machine because spec.bootstrap.configRef is not for a KubeadmConfig",
+			"apiVersion", machine.Spec.Bootstrap.ConfigRef.APIVersion,
+			"kind", machine.Spec.Bootstrap.ConfigRef.Kind,
+		)
+		return true
+	}
+
+	return false
+}
+
+func (u *ControlPlaneUpgrader) updateMachines(machines []*clusterv1.Machine) error {
 	for _, machine := range machines {
 		log := u.log.WithValues(
 			"machine", fmt.Sprintf("%s/%s", machine.Namespace, machine.Name),
 			"upgrade-id", u.upgradeID,
 		)
 
-		if machine.Spec.ProviderID == nil {
-			log.Info("unable to upgrade machine as it has no spec.providerID")
-			// TODO record event/annotation?
+		if err := u.reconcileMachineAnnotations(log, machine); err != nil {
+			log.Error(err, "Unable to reconcile machine annotations")
+			return err
+		}
+
+		if u.shouldSkipMachine(log, machine) {
 			continue
 		}
-
-		annotations := machine.GetAnnotations()
-		if annotations == nil {
-			annotations = make(map[string]string)
-			machine.SetAnnotations(annotations)
-		}
-
-		// Add upgrade ID if it isn't there
-		if annotations[AnnotationUpgradeID] == "" {
-			helper, err := patch.NewHelper(machine.DeepCopy(), u.managementClusterClient)
-			if err != nil {
-				// TODO should we do anything else?
-				log.Error(err, "error creating patch helper for machine (add upgrade id)")
-				continue
-			}
-
-			machine.Annotations[AnnotationUpgradeID] = u.upgradeID
-
-			log.Info("Storing upgrade ID on machine")
-
-			if err := helper.Patch(context.TODO(), machine); err != nil {
-				// TODO should we do anything else?
-				log.Error(err, "error patching machine (add upgrade id)")
-				continue
-			}
-		}
-
-		// Don't process a mismatching upgrade ID
-		if annotations[AnnotationUpgradeID] != u.upgradeID {
-			// TODO record that we're unable to upgrade because the ID is a mismatch (annotation? event?)
-			log.Info("Unable to upgrade machine - mismatching upgrade id", "machine-upgrade-id", annotations[AnnotationUpgradeID])
-			continue
-		}
-
-		// Skip if this is a replacement machine for the current upgrade
-		if strings.HasSuffix(machine.Name, upgradeSuffix(u.upgradeID)) {
-			log.Info("Skipping machine as it is a replacement machine for the in-process upgrade")
-			continue
-		}
-
-		// TODO skip if the bootstrap ref is not a KubeadmConfig
 
 		log.Info("Checking etcd health")
 		err := wait.PollImmediate(10*time.Second, 5*time.Minute, func() (bool, error) {
@@ -656,8 +700,7 @@ func (u *ControlPlaneUpgrader) updateMachines(machines []*clusterv1.Machine) err
 			return errors.Wrap(err, "timed out waiting for etcd health check to pass")
 		}
 
-		replacementMachineName := generateReplacementMachineName(machine.Name, u.upgradeID)
-
+		replacementMachineName := generateReplacementMachineName(machine.Annotations[AnnotationMachineNameBase], u.upgradeID)
 		replacementKey := ctrlclient.ObjectKey{
 			Namespace: u.clusterNamespace,
 			Name:      replacementMachineName,
@@ -690,24 +733,12 @@ func (u *ControlPlaneUpgrader) updateMachines(machines []*clusterv1.Machine) err
 	return nil
 }
 
-func upgradeSuffix(upgradeID string) string {
-	return ".upgrade." + upgradeID
-}
-
-// Match 'upgrade.' followed by one or more characters until end of input.
-var upgradeIDNameSuffixRegex = regexp.MustCompile(`upgrade\..+$`)
-
-// generateReplacementMachineName takes the original machine name and appends the upgrade suffix to it, removing any previous
-// suffix. If the generated name would be longer than the maximum allowed name length, generateReplacementMachineName truncates
-// the original name until the upgrade suffix fits.
-func generateReplacementMachineName(original, upgradeID string) string {
-	machineName := original
-	match := upgradeIDNameSuffixRegex.FindStringIndex(machineName)
-	machineSuffix := upgradeSuffix(upgradeID)
-	if match != nil {
-		index := match[0] - 1
-		machineName = machineName[0:index]
-	}
+// generateReplacementMachineName takes the base machine name and appends the upgrade suffix to it. If the generated
+// name would be longer than the maximum allowed name length, generateReplacementMachineName truncates the original name
+// until the upgrade suffix fits.
+func generateReplacementMachineName(base, upgradeID string) string {
+	machineName := base
+	machineSuffix := "-" + upgradeID
 
 	excess := len(machineName) + len(machineSuffix) - validation.DNS1123SubdomainMaxLength
 	if excess > 0 {

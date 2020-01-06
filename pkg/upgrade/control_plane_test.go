@@ -12,11 +12,15 @@ import (
 
 	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/pointer"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 )
 
@@ -144,46 +148,141 @@ metadata:
 func TestGenerateMachineName(t *testing.T) {
 	maxNameLength := validation.DNS1123SubdomainMaxLength
 	upgradeID := "a1b2c3d4e5f.6g7h-8i9j0k"
-	suffix := ".upgrade." + upgradeID
+	suffix := "-" + upgradeID
 	maxNameLengthWithoutTrimming := maxNameLength - len(suffix)
 
 	tests := []struct {
-		name         string
-		originalName string
-		expected     string
+		name     string
+		base     string
+		expected string
 	}{
 		{
-			name:         "short name",
-			originalName: "my-cluster",
-			expected:     "my-cluster" + suffix,
+			name:     "control plane",
+			base:     "controlplane-0",
+			expected: "controlplane-0" + suffix,
 		},
 		{
-			name:         "max length without trimming",
-			originalName: strings.Repeat("s", maxNameLengthWithoutTrimming),
-			expected:     strings.Repeat("s", maxNameLengthWithoutTrimming) + suffix,
+			name:     "max length without trimming",
+			base:     strings.Repeat("s", maxNameLengthWithoutTrimming),
+			expected: strings.Repeat("s", maxNameLengthWithoutTrimming) + suffix,
 		},
 		{
-			name:         "trimming",
-			originalName: strings.Repeat("s", maxNameLength),
-			expected:     strings.Repeat("s", maxNameLengthWithoutTrimming) + suffix,
-		},
-		{
-			name:         "replace old upgrade id - short",
-			originalName: "my-cluster.upgrade.a00000.11-111b",
-			expected:     "my-cluster" + suffix,
-		},
-		{
-			name:         "replace old upgrade id - trimming",
-			originalName: strings.Repeat("s", maxNameLengthWithoutTrimming) + ".upgrade.0000011111",
-			expected:     strings.Repeat("s", maxNameLengthWithoutTrimming) + suffix,
+			name:     "trimming",
+			base:     strings.Repeat("s", maxNameLength),
+			expected: strings.Repeat("s", maxNameLengthWithoutTrimming) + suffix,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			actual := generateReplacementMachineName(tc.originalName, upgradeID)
+			actual := generateReplacementMachineName(tc.base, upgradeID)
 			if tc.expected != actual {
 				t.Errorf("expected %q (len %d), got %q (len %d)", tc.expected, len(tc.expected), actual, len(actual))
+			}
+		})
+	}
+}
+
+func TestShouldSkipMachine(t *testing.T) {
+	valid := &clusterv1.Machine{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				AnnotationUpgradeID:       "abc",
+				AnnotationMachineNameBase: "base",
+			},
+			Namespace: "default",
+			Name:      "base",
+		},
+		Spec: clusterv1.MachineSpec{
+			ProviderID: pointer.StringPtr("provider-id"),
+			Bootstrap: clusterv1.Bootstrap{
+				ConfigRef: &corev1.ObjectReference{
+					Kind:       "KubeadmConfig",
+					Namespace:  "default",
+					Name:       "base-hc",
+					UID:        "some-uid",
+					APIVersion: "bootstrap.cluster.x-k8s.io/v1alpha2",
+				},
+			},
+		},
+	}
+
+	missingProviderID := valid.DeepCopy()
+	missingProviderID.Spec.ProviderID = nil
+
+	differentUpgradeID := valid.DeepCopy()
+	differentUpgradeID.Annotations[AnnotationUpgradeID] = "something-else"
+
+	missingMachineNameBase := valid.DeepCopy()
+	delete(missingMachineNameBase.Annotations, AnnotationMachineNameBase)
+
+	replacementMachine := valid.DeepCopy()
+	replacementMachine.Name = "base-abc"
+
+	missingBootstrapConfigRef := valid.DeepCopy()
+	missingBootstrapConfigRef.Spec.Bootstrap.ConfigRef = nil
+
+	otherBootstrapConfigRefAPIGroup := valid.DeepCopy()
+	otherBootstrapConfigRefAPIGroup.Spec.Bootstrap.ConfigRef.APIVersion = "some-other-group/v1alpha2"
+
+	otherBootstrapConfigRefKind := valid.DeepCopy()
+	otherBootstrapConfigRefKind.Spec.Bootstrap.ConfigRef.Kind = "SomeOtherKind"
+
+	tests := []struct {
+		name       string
+		machine    *clusterv1.Machine
+		expectSkip bool
+	}{
+		{
+			name:       "missing provider id",
+			machine:    missingProviderID,
+			expectSkip: true,
+		},
+		{
+			name:       "different upgrade id",
+			machine:    differentUpgradeID,
+			expectSkip: true,
+		},
+		{
+			name:       "missing machine name base",
+			machine:    missingMachineNameBase,
+			expectSkip: true,
+		},
+		{
+			name:       "replacement machine",
+			machine:    replacementMachine,
+			expectSkip: true,
+		},
+		{
+			name:       "missing bootstrap config ref",
+			machine:    missingProviderID,
+			expectSkip: true,
+		},
+		{
+			name:       "other bootstrap config ref api group",
+			machine:    otherBootstrapConfigRefAPIGroup,
+			expectSkip: true,
+		},
+		{
+			name:       "other bootstrap config ref kind",
+			machine:    otherBootstrapConfigRefKind,
+			expectSkip: true,
+		},
+		{
+			name:       "valid",
+			machine:    valid,
+			expectSkip: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			u := &ControlPlaneUpgrader{
+				upgradeID: "abc",
+			}
+
+			if e, a := tc.expectSkip, u.shouldSkipMachine(log.NullLogger{}, tc.machine); e != a {
+				t.Errorf("got %t, wanted %t", e, a)
 			}
 		})
 	}
