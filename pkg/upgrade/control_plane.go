@@ -16,7 +16,6 @@ import (
 	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
-	kubernetes2 "github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -39,6 +38,8 @@ import (
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
+
+	kubernetes2 "github.com/vmware/cluster-api-upgrade-tool/pkg/internal/kubernetes"
 )
 
 const (
@@ -460,8 +461,8 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		return fmt.Errorf("unknown previous node %q", originalProviderID.String())
 	}
 
-	oldHostName := hostnameForNode(oldNode)
-	log.Info("Determined node hostname for machine", "node", oldNode.Name, "hostname", oldHostName)
+	oldNodeName := oldNode.Name
+	log.Info("Got node name for machine", "node", oldNode.Name)
 
 	log.Info("Checking if we need to create a new machine")
 	replacementRef := v1.ObjectReference{
@@ -531,7 +532,7 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 	}
 
 	// Delete the etcd member, if necessary
-	oldEtcdMemberID := u.oldNodeToEtcdMember[oldHostName]
+	oldEtcdMemberID := u.oldNodeToEtcdMember[oldNodeName]
 	if oldEtcdMemberID != "" {
 		// TODO make timeout the last arg, for consistency (or pass in a ctx?)
 		err = u.deleteEtcdMember(time.Minute*1, oldEtcdMemberID)
@@ -576,7 +577,7 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 	log.Info("Removing machine from kubeadm ConfigMap")
 	err = wait.PollImmediate(deleteMachineInterval, u.machineTimeout, func() (bool, error) {
 		if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
-			return removeNodeFromKubeadmConfigMapClusterStatusAPIEndpoints(in, oldHostName)
+			return removeNodeFromKubeadmConfigMapClusterStatusAPIEndpoints(in, oldNodeName)
 		}); err != nil {
 
 			log.Error(err, "error removing machine from kubeadm ConfigMap")
@@ -951,15 +952,6 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(replacementKey ctrl
 	return nil
 }
 
-func hostnameForNode(node *v1.Node) string {
-	for _, address := range node.Status.Addresses {
-		if address.Type == v1.NodeHostName {
-			return address.Address
-		}
-	}
-	return ""
-}
-
 func (u *ControlPlaneUpgrader) listMachines() ([]*clusterv1.Machine, error) {
 	labels := ctrlclient.MatchingLabels{
 		clusterv1.MachineClusterLabelName:      u.clusterName,
@@ -1261,13 +1253,8 @@ func (u *ControlPlaneUpgrader) waitForMatchingNode(ctx context.Context, rawProvi
 
 func (u *ControlPlaneUpgrader) waitForNodeReady(ctx context.Context, newNode *v1.Node) error {
 	// wait for NodeReady
-	nodeHostname := hostnameForNode(newNode)
-	if nodeHostname == "" {
-		u.log.Info("unable to find hostname for node", "node", newNode.Name)
-		return errors.Errorf("unable to find hostname for node %s", newNode.Name)
-	}
 	err := wait.PollImmediateUntil(15*time.Second, func() (bool, error) {
-		ready := u.isReady(nodeHostname)
+		ready := u.isReady(newNode.Name)
 		return ready, nil
 	}, ctx.Done())
 	if err != nil {
@@ -1276,8 +1263,8 @@ func (u *ControlPlaneUpgrader) waitForNodeReady(ctx context.Context, newNode *v1
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) isReady(nodeHostname string) bool {
-	u.log.Info("Component health check for node", "hostname", nodeHostname)
+func (u *ControlPlaneUpgrader) isReady(nodeName string) bool {
+	u.log.Info("Component health check for node", "name", nodeName)
 
 	components := []string{"etcd", "kube-apiserver", "kube-scheduler", "kube-controller-manager"}
 	requiredConditions := sets.NewString("PodScheduled", "Initialized", "Ready", "ContainersReady")
@@ -1285,7 +1272,7 @@ func (u *ControlPlaneUpgrader) isReady(nodeHostname string) bool {
 	for _, component := range components {
 		foundConditions := sets.NewString()
 
-		podName := fmt.Sprintf("%s-%v", component, nodeHostname)
+		podName := fmt.Sprintf("%s-%v", component, nodeName)
 		log := u.log.WithValues("pod", podName)
 
 		log.Info("Getting pod")
