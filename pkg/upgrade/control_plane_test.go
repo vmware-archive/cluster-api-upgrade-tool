@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/pointer"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
@@ -391,4 +392,62 @@ kind: ClusterStatus
 	if e, a := expectedCM.Data["ClusterStatus"], updatedCM.Data["ClusterStatus"]; e != a {
 		t.Errorf("expected %s, got %s", e, a)
 	}
+}
+
+func TestHasNodeLabel(t *testing.T) {
+	nodeWithLabel := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "foo",
+			Labels: map[string]string{
+				LabelNodeRoleMaster: "",
+			},
+		},
+	}
+	nodeWithoutLabel := nodeWithLabel.DeepCopy()
+	nodeWithoutLabel.SetLabels(make(map[string]string))
+
+	tests := []struct {
+		name     string
+		node     *corev1.Node
+		expected bool
+	}{
+		{
+			name:     "node has label",
+			node:     nodeWithLabel,
+			expected: true,
+		},
+		{
+			name:     "node is not found",
+			node:     nil,
+			expected: false,
+		},
+		{
+			name:     "node does not have label",
+			node:     nodeWithoutLabel,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var fakeClient *fake.Clientset
+
+			if tt.node != nil {
+				fakeClient = fake.NewSimpleClientset(tt.node)
+			} else {
+				fakeClient = fake.NewSimpleClientset()
+			}
+			u := &ControlPlaneUpgrader{
+				log:                    log.NullLogger{},
+				targetKubernetesClient: fakeClient,
+				upgradeID:              "abc",
+			}
+
+			actual := u.hasMasterNodeLabel("foo")
+			if tt.expected != actual {
+				t.Errorf("expected %t, got %t", tt.expected, actual)
+			}
+		})
+	}
+
 }

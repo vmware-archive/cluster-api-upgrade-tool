@@ -47,6 +47,7 @@ const (
 	etcdCertFile         = "/etc/kubernetes/pki/etcd/peer.crt"
 	etcdKeyFile          = "/etc/kubernetes/pki/etcd/peer.key"
 	kubeadmConfigMapName = "kubeadm-config"
+	LabelNodeRoleMaster  = "node-role.kubernetes.io/master"
 
 	// annotationPrefix is the prefix for all annotations managed by this tool.
 	annotationPrefix = "upgrade.cluster-api.vmware.com/"
@@ -523,6 +524,10 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		return err
 	}
 	if err := u.waitForNodeReady(ctx, node); err != nil {
+		return err
+	}
+
+	if err := u.waitForNodeWithMasterLabel(ctx, node); err != nil {
 		return err
 	}
 
@@ -1261,6 +1266,33 @@ func (u *ControlPlaneUpgrader) waitForNodeReady(ctx context.Context, newNode *v1
 		return errors.Wrapf(err, "components on node %s are not ready", newNode.Name)
 	}
 	return nil
+}
+
+func (u *ControlPlaneUpgrader) waitForNodeWithMasterLabel(ctx context.Context, newNode *v1.Node) error {
+	err := wait.PollImmediateUntil(15*time.Second, func() (bool, error) {
+		return u.hasMasterNodeLabel(newNode.Name), nil
+	}, ctx.Done())
+	if err != nil {
+		return errors.Wrapf(err, "node %s does not have master label %q", newNode.Name, LabelNodeRoleMaster)
+	}
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) hasMasterNodeLabel(name string) bool {
+	u.log.Info("Verify node has master label", "name", name, "label", LabelNodeRoleMaster)
+
+	node, err := u.targetKubernetesClient.CoreV1().Nodes().Get(name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		u.log.Info("Pod not found yet")
+		return false
+	} else if err != nil {
+		u.log.Error(err, "error getting pod")
+		return false
+	}
+
+	_, ok := node.GetLabels()[LabelNodeRoleMaster]
+
+	return ok
 }
 
 func (u *ControlPlaneUpgrader) isReady(nodeName string) bool {
