@@ -449,5 +449,12 @@ func TestHasNodeLabel(t *testing.T) {
 			}
 		})
 	}
+}
 
+func TestReconcileReplacements(t *testing.T){
+
+	tests:= []struct{
+		name string
+		machines []*clusterv1.Machine
+	}{}
 }

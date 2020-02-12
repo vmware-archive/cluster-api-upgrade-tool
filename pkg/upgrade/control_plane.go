@@ -678,7 +678,31 @@ func (u *ControlPlaneUpgrader) shouldSkipMachine(log logr.Logger, machine *clust
 	return false
 }
 
+func (u *ControlPlaneUpgrader) reconcileReplacements(m []*clusterv1.Machine) error {
+
+	// if replacement machine is healthy, continue
+	// healthy:
+	//   waitForMachineProviderID
+	//   waitForNodeProviderID
+	//   waitForNodeReady
+	//   waitForNodeWithMasterLabel
+
+	// if replacement machine is unhealthy, destroy them along with other resources.
+	// destroy:
+	//   delete etcd member
+	//   delete existing replacement machine
+	//   delete machine from kubeadm configmap
+	return nil
+}
+
 func (u *ControlPlaneUpgrader) updateMachines(machines []*clusterv1.Machine) error {
+
+	// handle all replacement machines first
+	if err := reconcileReplacements(machines); err != nil {
+		return err
+	}
+
+	// then continue with non-replacement machines.
 	for _, machine := range machines {
 		log := u.log.WithValues(
 			"machine", fmt.Sprintf("%s/%s", machine.Namespace, machine.Name),
