@@ -515,11 +515,11 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 	defer cancel()
 
 	log.Info("Waiting for new machine", "timeout", u.machineTimeout)
-	newProviderID, err := u.waitForProviderID(ctx, u.clusterNamespace, replacementKey.Name)
+	newProviderID, err := u.waitForMachineWithProviderID(ctx, u.clusterNamespace, replacementKey.Name)
 	if err != nil {
 		return err
 	}
-	node, err := u.waitForMatchingNode(ctx, newProviderID)
+	node, err := u.waitForNodeWithProviderID(ctx, newProviderID)
 	if err != nil {
 		return err
 	}
@@ -1188,7 +1188,7 @@ func (u *ControlPlaneUpgrader) UpdateProviderIDsToNodes() error {
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) waitForProviderID(ctx context.Context, ns, name string) (string, error) {
+func (u *ControlPlaneUpgrader) waitForMachineWithProviderID(ctx context.Context, ns, name string) (string, error) {
 	log := u.log.WithValues("namespace", ns, "name", name)
 	log.Info("Waiting for machine to have a provider id")
 	var providerID string
@@ -1218,7 +1218,7 @@ func (u *ControlPlaneUpgrader) waitForProviderID(ctx context.Context, ns, name s
 	return providerID, nil
 }
 
-func (u *ControlPlaneUpgrader) waitForMatchingNode(ctx context.Context, rawProviderID string) (*v1.Node, error) {
+func (u *ControlPlaneUpgrader) waitForNodeWithProviderID(ctx context.Context, rawProviderID string) (*v1.Node, error) {
 	u.log.Info("Waiting for node", "provider-id", rawProviderID)
 	var matchingNode v1.Node
 	providerID, err := noderefutil.NewProviderID(rawProviderID)
