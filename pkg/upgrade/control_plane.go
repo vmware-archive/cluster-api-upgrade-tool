@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -47,6 +48,7 @@ const (
 	etcdCertFile         = "/etc/kubernetes/pki/etcd/peer.crt"
 	etcdKeyFile          = "/etc/kubernetes/pki/etcd/peer.key"
 	kubeadmConfigMapName = "kubeadm-config"
+	LabelNodeRoleMaster  = "node-role.kubernetes.io/master"
 
 	// annotationPrefix is the prefix for all annotations managed by this tool.
 	annotationPrefix = "upgrade.cluster-api.vmware.com/"
@@ -159,6 +161,8 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 		}
 	}
 
+	log.Info(fmt.Sprintf("Running upgrade with following configuration: %+v", config))
+
 	return &ControlPlaneUpgrader{
 		log:                     log,
 		desiredVersion:          parsedVersion,
@@ -185,6 +189,7 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	if len(machines) == 0 {
 		return errors.New("Found 0 control plane machines")
 	}
+	u.log.Info("Found control plane machines", "count", len(machines))
 
 	// Begin the upgrade by reconciling the kubeadm ConfigMap's ClusterStatus.APIEndpoints, just in case the data
 	// is out of sync.
@@ -252,6 +257,25 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 		return err
 	}
 
+	// reconcile machine annotation in the beginning for all the machines as
+	// part of this upgrade process.
+	for _, m := range machines {
+		if err := u.reconcileMachineAnnotations(m); err != nil {
+			u.log.Error(err, "Unable to reconcile machine annotations",
+				"machine",
+				fmt.Sprintf("%s/%s", m.Namespace, m.Name),
+			)
+			return err
+		}
+	}
+
+	// handle all replacement machines first in case they are in an unhealthy
+	// state.
+	u.log.Info("Reconciling replacement machines")
+	if err := u.reconcileReplacements(machines); err != nil {
+		return err
+	}
+
 	u.log.Info("Updating machines")
 	if err := u.updateMachines(machines); err != nil {
 		return err
@@ -267,7 +291,14 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 			Name:      replacementName,
 		}
 
-		if err := u.managementClusterClient.Get(context.TODO(), key, &replacement); err != nil {
+		if err := u.managementClusterClient.Get(context.TODO(), key, &replacement); apierrors.IsNotFound(err) {
+			// if there is a bad replacement machine in the beginning of the
+			// upgrade it is eventually deleted but the reference of the
+			// machine object is still in the slice of machines so just log
+			// this error and continue.
+			u.log.Info("skipping annotation removal from machine as it no longer exists", "machine", key.String())
+			continue
+		} else if err != nil {
 			return errors.Wrapf(err, "error getting machine %s", key.String())
 		}
 
@@ -449,21 +480,6 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		"replacement", replacementKey.String(),
 	)
 
-	originalProviderID, err := noderefutil.NewProviderID(*machine.Spec.ProviderID)
-	if err != nil {
-		return err
-	}
-	log.Info("Determined provider id for machine", "provider-id", originalProviderID)
-
-	oldNode := u.GetNodeFromProviderID(originalProviderID.ID())
-	if oldNode == nil {
-		u.log.Info("Couldn't retrieve oldNode", "id", originalProviderID.String())
-		return fmt.Errorf("unknown previous node %q", originalProviderID.String())
-	}
-
-	oldNodeName := oldNode.Name
-	log.Info("Got node name for machine", "node", oldNode.Name)
-
 	log.Info("Checking if we need to create a new machine")
 	replacementRef := v1.ObjectReference{
 		APIVersion: clusterv1.GroupVersion.String(),
@@ -509,20 +525,7 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		}
 	}
 
-	ctx := context.TODO()
-	ctx, cancel := context.WithTimeout(ctx, u.machineTimeout)
-	defer cancel()
-
-	log.Info("Waiting for new machine", "timeout", u.machineTimeout)
-	newProviderID, err := u.waitForProviderID(ctx, u.clusterNamespace, replacementKey.Name)
-	if err != nil {
-		return err
-	}
-	node, err := u.waitForMatchingNode(ctx, newProviderID)
-	if err != nil {
-		return err
-	}
-	if err := u.waitForNodeReady(ctx, node); err != nil {
+	if err := u.isHealthy(replacementMachine); err != nil {
 		return err
 	}
 
@@ -531,68 +534,18 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		return err
 	}
 
-	// Delete the etcd member, if necessary
-	oldEtcdMemberID := u.oldNodeToEtcdMember[oldNodeName]
-	if oldEtcdMemberID != "" {
-		// TODO make timeout the last arg, for consistency (or pass in a ctx?)
-		err = u.deleteEtcdMember(time.Minute*1, oldEtcdMemberID)
-		if err != nil {
-			return errors.Wrapf(err, "unable to delete old etcd member %s", oldEtcdMemberID)
-		}
-	}
-
-	const deleteMachineInterval = 10 * time.Second
-
-	log.Info("Deleting existing machine")
-	err = wait.PollImmediate(deleteMachineInterval, u.machineTimeout, func() (bool, error) {
-		// TODO plumb a context down to here instead of using TODO
-		if err := u.managementClusterClient.Delete(context.TODO(), machine); err != nil {
-			log.Error(err, "error deleting machine")
-			return false, nil
-		}
-		return true, nil
-	})
-	if err != nil {
-		return errors.Wrapf(err, "timed out asking to delete machine %s/%s", machine.Namespace, machine.Name)
-	}
-
-	log.Info("Waiting for machine to be deleted")
-	err = wait.PollImmediate(deleteMachineInterval, u.machineTimeout, func() (bool, error) {
-		// TODO plumb a context down to here instead of using TODO
-		var tempMachine clusterv1.Machine
-		key := ctrlclient.ObjectKey{
-			Namespace: machine.Namespace,
-			Name:      machine.Name,
-		}
-		if err := u.managementClusterClient.Get(context.TODO(), key, &tempMachine); apierrors.IsNotFound(err) {
-			return true, nil
-		}
-		return false, nil
-	})
-	if err != nil {
-		return errors.Wrapf(err, "timed out waiting for machine to be deleted %s/%s", machine.Namespace, machine.Name)
-	}
-
-	// remove node from apiEndpoints in Kubeadm config map
-	log.Info("Removing machine from kubeadm ConfigMap")
-	err = wait.PollImmediate(deleteMachineInterval, u.machineTimeout, func() (bool, error) {
-		if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
-			return removeNodeFromKubeadmConfigMapClusterStatusAPIEndpoints(in, oldNodeName)
-		}); err != nil {
-
-			log.Error(err, "error removing machine from kubeadm ConfigMap")
-			return false, nil
-		}
-		return true, nil
-	})
-	if err != nil {
-		return errors.Wrapf(err, "timed out removing machine %s/%s from kubeadm ConfigMap", machine.Namespace, machine.Name)
+	if err := u.removeMachine(machine); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) reconcileMachineAnnotations(log logr.Logger, machine *clusterv1.Machine) error {
+func (u *ControlPlaneUpgrader) reconcileMachineAnnotations(machine *clusterv1.Machine) error {
+	log := u.log.WithValues(
+		"machine", fmt.Sprintf("%s/%s", machine.Namespace, machine.Name),
+		"upgrade-id", u.upgradeID,
+	)
 	if machine.Annotations == nil {
 		machine.Annotations = make(map[string]string)
 	}
@@ -617,12 +570,15 @@ func (u *ControlPlaneUpgrader) reconcileMachineAnnotations(log logr.Logger, mach
 	}
 
 	log.Info("Patching machine annotations")
-
 	if err := helper.Patch(context.TODO(), machine); err != nil {
 		return errors.Wrap(err, "error patching machine annotations")
 	}
 
 	return nil
+}
+
+func (u *ControlPlaneUpgrader) isReplacementMachine(machine *clusterv1.Machine) bool {
+	return machine.Name == generateReplacementMachineName(machine.Annotations[AnnotationMachineNameBase], u.upgradeID)
 }
 
 func (u *ControlPlaneUpgrader) shouldSkipMachine(log logr.Logger, machine *clusterv1.Machine) bool {
@@ -638,14 +594,17 @@ func (u *ControlPlaneUpgrader) shouldSkipMachine(log logr.Logger, machine *clust
 		return true
 	}
 
+	// Skip if this machine doesn't have NameBase annotation
 	baseName := machine.Annotations[AnnotationMachineNameBase]
 	if baseName == "" {
-		// should never happen
-		log.Error(errors.New("machine is missing annotation "+AnnotationMachineNameBase), "unable to upgrade machine")
+		// should never happen because we call reconcileMachineAnnotations for all
+		// machines in the beginning.
+		log.Info("machine is missing annotation " + AnnotationMachineNameBase)
 		return true
 	}
+
 	// Skip if this is a replacement machine for the current upgrade
-	if machine.Name == generateReplacementMachineName(baseName, u.upgradeID) {
+	if u.isReplacementMachine(machine) {
 		log.Info("Skipping machine as it is a replacement machine for the in-process upgrade")
 		return true
 	}
@@ -673,17 +632,167 @@ func (u *ControlPlaneUpgrader) shouldSkipMachine(log logr.Logger, machine *clust
 	return false
 }
 
+// isHealthy verifies if a machine is healthy.
+// Conditions for health:
+// - the machine should have a ProviderID
+// - the machine should have a node associated with the ProviderID
+// - the node should be Ready
+// - the node should have the LabelNodeRoleMaster
+func (u *ControlPlaneUpgrader) isHealthy(machine *clusterv1.Machine) error {
+	ctx := context.TODO()
+	ctx, cancel := context.WithTimeout(ctx, u.machineTimeout)
+	defer cancel()
+
+	newProviderID, err := u.waitForMachineWithProviderID(ctx, machine.Namespace, machine.Name)
+	if err != nil {
+		return err
+	}
+	node, err := u.waitForNodeWithProviderID(ctx, newProviderID)
+	if err != nil {
+		return err
+	}
+	if err := u.waitForNodeReady(ctx, node); err != nil {
+		return err
+	}
+	if err := u.waitForNodeWithMasterLabel(ctx, node); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// removeMachine removes the machine and its references.
+// It deletes and waits for the machine to be deleted.
+// If the machine has a ProviderID, it proceeds to remove the corresponding
+// etcd member and entry from the KubeadmConfigMap.
+func (u *ControlPlaneUpgrader) removeMachine(machine *clusterv1.Machine) error {
+	ctx := context.TODO()
+	ctx, cancel := context.WithTimeout(ctx, u.machineTimeout)
+	defer cancel()
+
+	log := u.log.WithValues(
+		"machine", fmt.Sprintf("%s/%s", machine.Namespace, machine.Name),
+		"upgrade", u.upgradeID,
+	)
+	const deleteMachineInterval = 10 * time.Second
+	var (
+		err  error
+		node *v1.Node
+	)
+
+	// Delete the machine from etcd member list if there is a ProviderID for
+	// the machine. A replacement machine could've been created without a
+	// ProviderID assigned.
+	if machine.Spec.ProviderID != nil {
+		machineProviderID, err := noderefutil.NewProviderID(*machine.Spec.ProviderID)
+		if err != nil {
+			return err
+		}
+		log.Info("Determined provider id for machine", "provider-id", machineProviderID.String())
+
+		node = u.GetNodeFromProviderID(machineProviderID.ID())
+		if node == nil {
+			log.Info("Couldn't retrieve Node", "provider-id", machineProviderID.String())
+			return fmt.Errorf("unknown previous node %q", machineProviderID.String())
+		}
+		// NOTE: this list is curated in the beginning. If the machine was a
+		// replacement and it had a corresponding replacement node registered,
+		// it would be in this list as well.
+		oldEtcdMemberID := u.oldNodeToEtcdMember[node.Name]
+		// Delete the etcd member, if necessary
+		if oldEtcdMemberID != "" {
+			// TODO make timeout the last arg, for consistency (or pass in a ctx?)
+			err = u.deleteEtcdMember(time.Minute*1, oldEtcdMemberID)
+			if err != nil {
+				return errors.Wrapf(err, "unable to delete old etcd member %s", oldEtcdMemberID)
+			}
+		}
+	}
+
+	log.Info("Deleting machine")
+	err = wait.PollImmediateUntil(deleteMachineInterval, func() (bool, error) {
+		if err := u.managementClusterClient.Delete(ctx, machine); err != nil {
+			log.Error(err, "error deleting machine")
+			return false, nil
+		}
+		return true, nil
+	}, ctx.Done())
+	if err != nil {
+		return errors.Wrapf(err, "timed out asking to delete machine %s/%s", machine.Namespace, machine.Name)
+	}
+
+	log.Info("Waiting for machine to be deleted")
+	err = wait.PollImmediateUntil(deleteMachineInterval, func() (bool, error) {
+		var tempMachine clusterv1.Machine
+		key := ctrlclient.ObjectKey{
+			Namespace: machine.Namespace,
+			Name:      machine.Name,
+		}
+		if err := u.managementClusterClient.Get(ctx, key, &tempMachine); apierrors.IsNotFound(err) {
+			log.Info("Machine has been deleted")
+			return true, nil
+		}
+		return false, nil
+	}, ctx.Done())
+	if err != nil {
+		return errors.Wrapf(err, "timed out waiting for machine to be deleted %s/%s", machine.Namespace, machine.Name)
+	}
+
+	// Delete the node from the KubeadmConfigMap if there is one.
+	if node != nil {
+		// remove node from apiEndpoints in Kubeadm config map
+		log.Info("Removing machine from kubeadm ConfigMap")
+		err = wait.PollImmediateUntil(deleteMachineInterval, func() (bool, error) {
+			if err := u.updateKubeadmConfigMap(func(in *v1.ConfigMap) (*v1.ConfigMap, error) {
+				return removeNodeFromKubeadmConfigMapClusterStatusAPIEndpoints(in, node.Name)
+			}); err != nil {
+
+				log.Error(err, "error removing machine from kubeadm ConfigMap")
+				return false, nil
+			}
+			return true, nil
+		}, ctx.Done())
+		if err != nil {
+			return errors.Wrapf(err, "timed out removing machine %s/%s from kubeadm ConfigMap", machine.Namespace, machine.Name)
+		}
+	}
+
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) reconcileReplacements(machines []*clusterv1.Machine) error {
+	var errs []error
+	for _, m := range machines {
+		if !u.isReplacementMachine(m) {
+			continue
+		}
+
+		log := u.log.WithValues(
+			"machine", fmt.Sprintf("%s/%s", m.Namespace, m.Name),
+			"upgrade-id", u.upgradeID,
+		)
+		log.Info("Found replacement machine for the in-process upgrade")
+
+		if err := u.isHealthy(m); err != nil {
+			log.Error(err, "Replacement machine is not healthy, going to remove all references of it")
+			if err := u.removeMachine(m); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+
+		log.Info("Replacement machine is healthy")
+	}
+
+	return kerrors.NewAggregate(errs)
+}
+
 func (u *ControlPlaneUpgrader) updateMachines(machines []*clusterv1.Machine) error {
 	for _, machine := range machines {
 		log := u.log.WithValues(
 			"machine", fmt.Sprintf("%s/%s", machine.Namespace, machine.Name),
 			"upgrade-id", u.upgradeID,
 		)
-
-		if err := u.reconcileMachineAnnotations(log, machine); err != nil {
-			log.Error(err, "Unable to reconcile machine annotations")
-			return err
-		}
 
 		if u.shouldSkipMachine(log, machine) {
 			continue
@@ -1183,7 +1292,7 @@ func (u *ControlPlaneUpgrader) UpdateProviderIDsToNodes() error {
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) waitForProviderID(ctx context.Context, ns, name string) (string, error) {
+func (u *ControlPlaneUpgrader) waitForMachineWithProviderID(ctx context.Context, ns, name string) (string, error) {
 	log := u.log.WithValues("namespace", ns, "name", name)
 	log.Info("Waiting for machine to have a provider id")
 	var providerID string
@@ -1213,7 +1322,7 @@ func (u *ControlPlaneUpgrader) waitForProviderID(ctx context.Context, ns, name s
 	return providerID, nil
 }
 
-func (u *ControlPlaneUpgrader) waitForMatchingNode(ctx context.Context, rawProviderID string) (*v1.Node, error) {
+func (u *ControlPlaneUpgrader) waitForNodeWithProviderID(ctx context.Context, rawProviderID string) (*v1.Node, error) {
 	u.log.Info("Waiting for node", "provider-id", rawProviderID)
 	var matchingNode v1.Node
 	providerID, err := noderefutil.NewProviderID(rawProviderID)
@@ -1235,7 +1344,7 @@ func (u *ControlPlaneUpgrader) waitForMatchingNode(ctx context.Context, rawProvi
 				continue
 			}
 			if providerID.Equals(nodeID) {
-				u.log.Info("Found node", "name", node.Name)
+				u.log.Info("Found node", "name", node.Name, "provider-id", providerID.String())
 				matchingNode = node
 				return true, nil
 			}
@@ -1251,16 +1360,44 @@ func (u *ControlPlaneUpgrader) waitForMatchingNode(ctx context.Context, rawProvi
 	return &matchingNode, nil
 }
 
-func (u *ControlPlaneUpgrader) waitForNodeReady(ctx context.Context, newNode *v1.Node) error {
+func (u *ControlPlaneUpgrader) waitForNodeReady(ctx context.Context, node *v1.Node) error {
 	// wait for NodeReady
 	err := wait.PollImmediateUntil(15*time.Second, func() (bool, error) {
-		ready := u.isReady(newNode.Name)
+		ready := u.isReady(node.Name)
 		return ready, nil
 	}, ctx.Done())
 	if err != nil {
-		return errors.Wrapf(err, "components on node %s are not ready", newNode.Name)
+		return errors.Wrapf(err, "components on node %s are not ready", node.Name)
 	}
 	return nil
+}
+
+func (u *ControlPlaneUpgrader) waitForNodeWithMasterLabel(ctx context.Context, node *v1.Node) error {
+	err := wait.PollImmediateUntil(15*time.Second, func() (bool, error) {
+		return u.hasMasterNodeLabel(node.Name), nil
+	}, ctx.Done())
+	if err != nil {
+		return errors.Wrapf(err, "node %s does not have master label %q", node.Name, LabelNodeRoleMaster)
+	}
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) hasMasterNodeLabel(nodeName string) bool {
+	log := u.log.WithValues("node", nodeName)
+	log.Info("Verifying node has master label", "label", LabelNodeRoleMaster)
+
+	node, err := u.targetKubernetesClient.CoreV1().Nodes().Get(nodeName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		log.Info("Node not found yet")
+		return false
+	}
+	if err != nil {
+		log.Error(err, "error getting node")
+		return false
+	}
+
+	_, ok := node.GetLabels()[LabelNodeRoleMaster]
+	return ok
 }
 
 func (u *ControlPlaneUpgrader) isReady(nodeName string) bool {
@@ -1280,7 +1417,8 @@ func (u *ControlPlaneUpgrader) isReady(nodeName string) bool {
 		if apierrors.IsNotFound(err) {
 			log.Info("Pod not found yet")
 			return false
-		} else if err != nil {
+		}
+		if err != nil {
 			log.Error(err, "error getting pod")
 			return false
 		}
