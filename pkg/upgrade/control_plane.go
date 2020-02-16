@@ -29,9 +29,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	bootstrapv1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/api/v1alpha2"
-	kubeadmv1beta1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/kubeadm/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	clusterv1a3 "sigs.k8s.io/cluster-api/api/v1alpha3"
+	bootstrapv1 "sigs.k8s.io/cluster-api/bootstrap/kubeadm/api/v1alpha2"
+	kubeadmv1beta1 "sigs.k8s.io/cluster-api/bootstrap/kubeadm/types/v1beta1"
 	"sigs.k8s.io/cluster-api/controllers/external"
 	"sigs.k8s.io/cluster-api/controllers/noderefutil"
 	"sigs.k8s.io/cluster-api/util/kubeconfig"
@@ -112,13 +113,13 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 	}
 
 	log.Info("Retrieving cluster from management cluster", "cluster-namespace", config.TargetCluster.Namespace, "cluster-name", config.TargetCluster.Name)
-	cluster := &clusterv1.Cluster{}
+	cluster := &clusterv1a3.Cluster{}
 	err = managementClusterClient.Get(context.TODO(), ctrlclient.ObjectKey{Namespace: config.TargetCluster.Namespace, Name: config.TargetCluster.Name}, cluster)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 
-	kc, err := kubeconfig.FromSecret(managementClusterClient, cluster)
+	kc, err := kubeconfig.FromSecret(context.TODO(), managementClusterClient, cluster)
 	if err != nil {
 		return nil, errors.Wrap(err, "error retrieving cluster kubeconfig secret")
 	}
@@ -922,7 +923,7 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(replacementKey ctrl
 	// Step 2: if we're here, we need to create it
 
 	// get original infrastructure object
-	infra, err := external.Get(u.managementClusterClient, &ref, u.clusterNamespace)
+	infra, err := external.Get(context.TODO(), u.managementClusterClient, &ref, u.clusterNamespace)
 	if err != nil {
 		return err
 	}
@@ -954,8 +955,8 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(replacementKey ctrl
 
 func (u *ControlPlaneUpgrader) listMachines() ([]*clusterv1.Machine, error) {
 	labels := ctrlclient.MatchingLabels{
-		clusterv1.MachineClusterLabelName:      u.clusterName,
-		clusterv1.MachineControlPlaneLabelName: "true",
+		clusterv1.MachineClusterLabelName:        u.clusterName,
+		clusterv1a3.MachineControlPlaneLabelName: "true",
 	}
 	listOptions := []ctrlclient.ListOption{
 		labels,
