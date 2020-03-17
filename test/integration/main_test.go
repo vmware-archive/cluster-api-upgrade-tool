@@ -344,6 +344,7 @@ var _ = Describe("Upgrade Tool", func() {
 
 			// TODO check that we have a single upgraded machine
 			// TODO check that we have a single upgraded node
+			// TODO check that the secret ownerrefs have been updated accurately
 		})
 	})
 })
