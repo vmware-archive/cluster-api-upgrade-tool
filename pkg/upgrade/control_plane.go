@@ -928,6 +928,9 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 	if err != nil {
 		return errors.WithStack(err)
 	}
+	// Set bootstrap to the results of the Create call so generated values are
+	// not lost
+	bootstrap = toCreate.(*bootstrapv1.KubeadmConfig)
 
 	// Return early if we've already updated the ownerRefs
 	if u.secretsUpdated {
