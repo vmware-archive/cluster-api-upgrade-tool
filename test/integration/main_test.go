@@ -21,6 +21,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/clientcmd"
@@ -342,9 +343,53 @@ var _ = Describe("Upgrade Tool", func() {
 
 			Expect(upgrader.Upgrade()).To(Succeed())
 
-			// TODO check that we have a single upgraded machine
+			By("Checking that we have a single upgraded machine")
+			cpMachineSelector, err := labels.Parse(fmt.Sprintf("%s,%s",
+				fmt.Sprintf("%s=%s", clusterv1.MachineClusterLabelName, cluster.Name),
+				fmt.Sprintf("%s=%s", clusterv1.MachineControlPlaneLabelName, "true")))
+			Expect(err).To(BeNil())
+
+			machines := &clusterv1.MachineList{}
+			err = managementClusterClient.List(ctx, machines, &client.ListOptions{
+				LabelSelector: cpMachineSelector,
+				Namespace:     cluster.Namespace,
+			})
+			Expect(err).To(BeNil())
+			Expect(len(machines.Items)).To(Equal(1))
+
+			// TODO Expand on verification of the single upgraded machine
+			newMachine := machines.Items[0]
+			Expect(newMachine.Spec.Version).To(BeEquivalentTo(cfg.KubernetesVersion))
+			Expect(newMachine.Spec.Bootstrap.ConfigRef).ToNot(BeNil())
+
 			// TODO check that we have a single upgraded node
-			// TODO check that the secret ownerrefs have been updated accurately
+
+			By("Checking that the secret ownerRefs have been updated accurately")
+			newKubeadmConfig := &cabpkv1.KubeadmConfig{}
+			newKubeadmConfigKey := client.ObjectKey{
+				Name:      newMachine.Spec.Bootstrap.ConfigRef.Name,
+				Namespace: newMachine.Spec.Bootstrap.ConfigRef.Namespace,
+			}
+			Expect(managementClusterClient.Get(ctx, newKubeadmConfigKey, newKubeadmConfig)).To(Succeed())
+
+			secretNames := []string{
+				fmt.Sprintf("%s-ca", cluster.Name),
+				fmt.Sprintf("%s-etcd", cluster.Name),
+				fmt.Sprintf("%s-sa", cluster.Name),
+				fmt.Sprintf("%s-proxy", cluster.Name),
+			}
+
+			for _, secretName := range secretNames {
+				secret := &v1.Secret{}
+				secretKey := client.ObjectKey{Name: secretName, Namespace: cluster.Namespace}
+				Expect(managementClusterClient.Get(ctx, secretKey, secret)).To(Succeed())
+
+				Expect(len(secret.OwnerReferences)).To(Equal(1))
+				Expect(secret.OwnerReferences[0].APIVersion).To(Equal(cabpkv1.GroupVersion.String()))
+				Expect(secret.OwnerReferences[0].Kind).To(Equal("KubeadmConfig"))
+				Expect(secret.OwnerReferences[0].Name).To(Equal(newKubeadmConfig.Name))
+				Expect(secret.OwnerReferences[0].UID).To(Equal(newKubeadmConfig.UID))
+			}
 		})
 	})
 })
