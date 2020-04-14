@@ -161,7 +161,11 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 		}
 	}
 
-	log.Info(fmt.Sprintf("Running upgrade with following configuration: %+v", config))
+	jsonConfig, err := json.Marshal(config)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to json marshal config object")
+	}
+	log.Info(fmt.Sprintf("Running upgrade with following configuration: %s", jsonConfig))
 
 	return &ControlPlaneUpgrader{
 		log:                     log,
