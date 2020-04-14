@@ -695,20 +695,26 @@ func (u *ControlPlaneUpgrader) removeMachine(machine *clusterv1.Machine) error {
 		log.Info("Determined provider id for machine", "provider-id", machineProviderID.String())
 
 		node = u.GetNodeFromProviderID(machineProviderID.ID())
+		removeNodeFromEtcd := true
 		if node == nil {
 			log.Info("Couldn't retrieve Node", "provider-id", machineProviderID.String())
-			return fmt.Errorf("unknown previous node %q", machineProviderID.String())
+			// In the event that there is a machine with a ProviderID but
+			// there is no node that can be found, we just want to go ahead
+			// and delete the machine instance.
+			removeNodeFromEtcd = false
 		}
 		// NOTE: this list is curated in the beginning. If the machine was a
 		// replacement and it had a corresponding replacement node registered,
 		// it would be in this list as well.
-		oldEtcdMemberID := u.oldNodeToEtcdMember[node.Name]
-		// Delete the etcd member, if necessary
-		if oldEtcdMemberID != "" {
-			// TODO make timeout the last arg, for consistency (or pass in a ctx?)
-			err = u.deleteEtcdMember(time.Minute*1, oldEtcdMemberID)
-			if err != nil {
-				return errors.Wrapf(err, "unable to delete old etcd member %s", oldEtcdMemberID)
+		if removeNodeFromEtcd {
+			oldEtcdMemberID := u.oldNodeToEtcdMember[node.Name]
+			// Delete the etcd member, if necessary
+			if oldEtcdMemberID != "" {
+				// TODO make timeout the last arg, for consistency (or pass in a ctx?)
+				err = u.deleteEtcdMember(time.Minute*1, oldEtcdMemberID)
+				if err != nil {
+					return errors.Wrapf(err, "unable to delete old etcd member %s", oldEtcdMemberID)
+				}
 			}
 		}
 	}
