@@ -871,6 +871,20 @@ func generateReplacementMachineName(base, upgradeID string) string {
 	return machineName + machineSuffix
 }
 
+func getAllButMachineOwners(ownerRefs []metav1.OwnerReference) []metav1.OwnerReference {
+	filtered := make([]metav1.OwnerReference, 0, len(ownerRefs))
+	for _, owner := range ownerRefs {
+		if owner.Kind == "Machine" {
+			// Skip Machine owners so that it will be adopted by the
+			// MachineController
+			continue
+		}
+		filtered = append(filtered, owner)
+	}
+
+	return filtered
+}
+
 func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.ObjectKey, configName string) (*bootstrapv1.KubeadmConfig, error) {
 	// Step 1: return early if we've already created the replacement infra resource
 	replacementRef := v1.ObjectReference{
@@ -910,7 +924,10 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 	// modify bootstrap config
 	bootstrap.SetName(replacementKey.Name)
 	bootstrap.SetResourceVersion("")
-	bootstrap.SetOwnerReferences(nil)
+
+	// Remove only the Machine owner reference so we preserve other refs
+	ownerRefs := getAllButMachineOwners(bootstrap.GetOwnerReferences())
+	bootstrap.SetOwnerReferences(ownerRefs)
 
 	// find node registration
 	nodeRegistration := kubeadmv1beta1.NodeRegistrationOptions{}
@@ -1066,7 +1083,11 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(replacementKey ctrl
 	// prep the replacement
 	infra.SetResourceVersion("")
 	infra.SetName(replacementKey.Name)
-	infra.SetOwnerReferences(nil)
+
+	// Remove only the Machine owner reference so we preserve other refs
+	ownerRefs := getAllButMachineOwners(infra.GetOwnerReferences())
+	infra.SetOwnerReferences(ownerRefs)
+
 	unstructured.RemoveNestedField(infra.UnstructuredContent(), "spec", "providerID")
 
 	// Convert to a runtime.Object in case we need to patch, so we don't have to type assert after patching
