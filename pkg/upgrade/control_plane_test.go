@@ -146,6 +146,51 @@ metadata:
 	}
 }
 
+func TestMachineOwnerFiltration(t *testing.T) {
+	machineRef := metav1.OwnerReference{
+		APIVersion: "cluster.x-k8s.io/v1alpha2",
+		Kind:       "Machine",
+		Name:       "Someone",
+		UID:        "abcdefg",
+	}
+
+	fooRef := metav1.OwnerReference{
+		APIVersion: "foo.bar.xyz/v1alpha1",
+		Kind:       "Baz",
+		Name:       "Something",
+		UID:        "abc123",
+	}
+
+	tests := []struct {
+		name           string
+		ownerRefs      []metav1.OwnerReference
+		expectedLength int
+	}{
+		{
+			name:           "with machine ref",
+			ownerRefs:      []metav1.OwnerReference{machineRef},
+			expectedLength: 0,
+		},
+		{
+			name:           "without machine ref",
+			ownerRefs:      []metav1.OwnerReference{fooRef},
+			expectedLength: 1,
+		},
+		{
+			name:           "with machine ref and others",
+			ownerRefs:      []metav1.OwnerReference{machineRef, fooRef},
+			expectedLength: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			filtered := filterOutMachineOwners(tc.ownerRefs)
+			assert.Len(t, filtered, tc.expectedLength)
+		})
+	}
+}
+
 func TestGenerateMachineName(t *testing.T) {
 	maxNameLength := validation.DNS1123SubdomainMaxLength
 	upgradeID := "a1b2c3d4e5f.6g7h-8i9j0k"

@@ -871,12 +871,14 @@ func generateReplacementMachineName(base, upgradeID string) string {
 	return machineName + machineSuffix
 }
 
-func getAllButMachineOwners(ownerRefs []metav1.OwnerReference) []metav1.OwnerReference {
+// filterOutMachineOwners filters out owner references of kind "Machine",
+// leaving owner references of other kinds. This allows the Machine controller
+// to adopt the objects after they're created, but allows us to preserve owner
+// refs of various other kinds
+func filterOutMachineOwners(ownerRefs []metav1.OwnerReference) []metav1.OwnerReference {
 	filtered := make([]metav1.OwnerReference, 0, len(ownerRefs))
 	for _, owner := range ownerRefs {
 		if owner.Kind == "Machine" {
-			// Skip Machine owners so that it will be adopted by the
-			// MachineController
 			continue
 		}
 		filtered = append(filtered, owner)
@@ -925,8 +927,7 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 	bootstrap.SetName(replacementKey.Name)
 	bootstrap.SetResourceVersion("")
 
-	// Remove only the Machine owner reference so we preserve other refs
-	ownerRefs := getAllButMachineOwners(bootstrap.GetOwnerReferences())
+	ownerRefs := filterOutMachineOwners(bootstrap.GetOwnerReferences())
 	bootstrap.SetOwnerReferences(ownerRefs)
 
 	// find node registration
@@ -1084,8 +1085,7 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(replacementKey ctrl
 	infra.SetResourceVersion("")
 	infra.SetName(replacementKey.Name)
 
-	// Remove only the Machine owner reference so we preserve other refs
-	ownerRefs := getAllButMachineOwners(infra.GetOwnerReferences())
+	ownerRefs := filterOutMachineOwners(infra.GetOwnerReferences())
 	infra.SetOwnerReferences(ownerRefs)
 
 	unstructured.RemoveNestedField(infra.UnstructuredContent(), "spec", "providerID")
