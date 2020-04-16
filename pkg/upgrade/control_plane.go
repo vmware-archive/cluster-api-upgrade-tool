@@ -474,7 +474,7 @@ func (u *ControlPlaneUpgrader) etcdClusterHealthCheck(timeout time.Duration) err
 	return err
 }
 
-func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey, machine *clusterv1.Machine) error {
+func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey, machine *clusterv1.Machine, bootstrap *bootstrapv1.KubeadmConfig) error {
 	log := u.log.WithValues(
 		"machine", fmt.Sprintf("%s/%s", machine.Namespace, machine.Name),
 		"replacement", replacementKey.String(),
@@ -487,7 +487,7 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		Namespace:  replacementKey.Namespace,
 		Name:       replacementKey.Name,
 	}
-	exists, err := u.resourceExists(replacementRef)
+	exists, _, err := u.resourceExists(replacementRef)
 	if err != nil {
 		return err
 	}
@@ -526,6 +526,10 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 	}
 
 	if err := u.isHealthy(replacementMachine); err != nil {
+		return err
+	}
+
+	if err := u.updateSecrets(bootstrap); err != nil {
 		return err
 	}
 
@@ -830,12 +834,14 @@ func (u *ControlPlaneUpgrader) updateMachines(machines []*clusterv1.Machine) err
 			"kind", machine.Spec.Bootstrap.ConfigRef.Kind,
 			"name", machine.Spec.Bootstrap.ConfigRef.Name,
 		)
-		if err := u.updateBootstrapConfig(replacementKey, machine.Spec.Bootstrap.ConfigRef.Name); err != nil {
+
+		bootstrap, err := u.updateBootstrapConfig(replacementKey, machine.Spec.Bootstrap.ConfigRef.Name)
+		if err != nil {
 			return err
 		}
 
 		log.Info("Updating machine")
-		if err := u.updateMachine(replacementKey, machine); err != nil {
+		if err := u.updateMachine(replacementKey, machine, bootstrap); err != nil {
 			return err
 		}
 	}
@@ -859,7 +865,7 @@ func generateReplacementMachineName(base, upgradeID string) string {
 	return machineName + machineSuffix
 }
 
-func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.ObjectKey, configName string) error {
+func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.ObjectKey, configName string) (*bootstrapv1.KubeadmConfig, error) {
 	// Step 1: return early if we've already created the replacement infra resource
 	replacementRef := v1.ObjectReference{
 		APIVersion: bootstrapv1.GroupVersion.String(),
@@ -867,12 +873,17 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 		Namespace:  replacementKey.Namespace,
 		Name:       replacementKey.Name,
 	}
-	exists, err := u.resourceExists(replacementRef)
+	exists, obj, err := u.resourceExists(replacementRef)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if exists {
-		return nil
+		bootstrap := &bootstrapv1.KubeadmConfig{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), bootstrap)
+		if err != nil {
+			return nil, err
+		}
+		return bootstrap, nil
 	}
 
 	// Step 2: if we're here, we need to create it
@@ -884,7 +895,7 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 		Namespace: u.clusterNamespace,
 	}
 	if err := u.managementClusterClient.Get(context.TODO(), bootstrapKey, bootstrap); err != nil {
-		return errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	// modify bootstrap config
@@ -920,18 +931,22 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 	if u.bootstrapPatch != nil {
 		toCreate, err = patchRuntimeObject(bootstrap, u.bootstrapPatch)
 		if err != nil {
-			return errors.Wrap(err, "error patching bootstrap resource")
+			return nil, errors.Wrap(err, "error patching bootstrap resource")
 		}
 	}
 
 	err = u.managementClusterClient.Create(context.TODO(), toCreate)
 	if err != nil {
-		return errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 	// Set bootstrap to the results of the Create call so generated values are
 	// not lost
 	bootstrap = toCreate.(*bootstrapv1.KubeadmConfig)
 
+	return bootstrap, nil
+}
+
+func (u *ControlPlaneUpgrader) updateSecrets(bootstrap *bootstrapv1.KubeadmConfig) error {
 	// Return early if we've already updated the ownerRefs
 	if u.secretsUpdated {
 		return nil
@@ -974,7 +989,7 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) resourceExists(ref v1.ObjectReference) (bool, error) {
+func (u *ControlPlaneUpgrader) resourceExists(ref v1.ObjectReference) (bool, *unstructured.Unstructured, error) {
 	obj := new(unstructured.Unstructured)
 	obj.SetAPIVersion(ref.APIVersion)
 	obj.SetKind(ref.Kind)
@@ -984,12 +999,12 @@ func (u *ControlPlaneUpgrader) resourceExists(ref v1.ObjectReference) (bool, err
 	}
 	if err := u.managementClusterClient.Get(context.TODO(), key, obj); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return false, nil, nil
 		}
-		return false, errors.WithStack(err)
+		return false, nil, errors.WithStack(err)
 	}
 
-	return true, nil
+	return true, obj, nil
 }
 
 func patchRuntimeObject(obj runtime.Object, patch jsonpatch.Patch) (runtime.Object, error) {
@@ -1023,7 +1038,7 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(replacementKey ctrl
 		Namespace:  replacementKey.Namespace,
 		Name:       replacementKey.Name,
 	}
-	exists, err := u.resourceExists(replacementRef)
+	exists, _, err := u.resourceExists(replacementRef)
 	if err != nil {
 		return err
 	}
