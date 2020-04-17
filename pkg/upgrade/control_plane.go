@@ -33,6 +33,7 @@ import (
 	bootstrapv1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/api/v1alpha2"
 	kubeadmv1beta1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/kubeadm/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
+	"sigs.k8s.io/cluster-api/controllers/external"
 	"sigs.k8s.io/cluster-api/controllers/noderefutil"
 	"sigs.k8s.io/cluster-api/util/kubeconfig"
 	"sigs.k8s.io/cluster-api/util/patch"
@@ -1039,18 +1040,25 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(replacementKey ctrl
 		Namespace:  replacementKey.Namespace,
 		Name:       replacementKey.Name,
 	}
-	infra, err := u.resourceExists(replacementRef)
+	obj, err := u.resourceExists(replacementRef)
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return errors.WithStack(err)
 		}
 	}
 
-	if infra != nil {
+	if obj != nil {
 		return nil
 	}
 
 	// Step 2: if we're here, we need to create it
+
+	// get original infrastructure object
+	infra, err := external.Get(u.managementClusterClient, &ref, u.clusterNamespace)
+	if err != nil {
+		return err
+	}
+
 	// prep the replacement
 	infra.SetResourceVersion("")
 	infra.SetName(replacementKey.Name)
