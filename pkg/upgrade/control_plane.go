@@ -474,7 +474,7 @@ func (u *ControlPlaneUpgrader) etcdClusterHealthCheck(timeout time.Duration) err
 	return err
 }
 
-func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey, machine *clusterv1.Machine, bootstrap *bootstrapv1.KubeadmConfig) error {
+func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey, machine *clusterv1.Machine, replacementBootstrap *bootstrapv1.KubeadmConfig) error {
 	log := u.log.WithValues(
 		"machine", fmt.Sprintf("%s/%s", machine.Namespace, machine.Name),
 		"replacement", replacementKey.String(),
@@ -531,7 +531,11 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		return err
 	}
 
-	if err := u.updateSecrets(bootstrap); err != nil {
+	// Update secrets once the replacement has been made healthy so that secrets
+	// aren't potentially garbage collected when recovering from an incomplete
+	// upgrade. We update _just before_ removing the old machine so that there is
+	// no window where the secrets are owned by a non-existent machine.
+	if err := u.updateSecrets(replacementBootstrap); err != nil {
 		return err
 	}
 
@@ -837,13 +841,13 @@ func (u *ControlPlaneUpgrader) updateMachines(machines []*clusterv1.Machine) err
 			"name", machine.Spec.Bootstrap.ConfigRef.Name,
 		)
 
-		bootstrap, err := u.updateBootstrapConfig(replacementKey, machine.Spec.Bootstrap.ConfigRef.Name)
+		replacementBootstrap, err := u.updateBootstrapConfig(replacementKey, machine.Spec.Bootstrap.ConfigRef.Name)
 		if err != nil {
 			return err
 		}
 
 		log.Info("Updating machine")
-		if err := u.updateMachine(replacementKey, machine, bootstrap); err != nil {
+		if err := u.updateMachine(replacementKey, machine, replacementBootstrap); err != nil {
 			return err
 		}
 	}
