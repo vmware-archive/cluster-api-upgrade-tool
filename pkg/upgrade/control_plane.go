@@ -1184,7 +1184,7 @@ func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, a
 
 	ip := pod.Status.PodIP
 	if ip == "" {
-		ip = "[127.0.0.1]"
+		ip = "127.0.0.1"
 	}
 	endpoint := fmt.Sprintf("https://%s:2379", ip)
 
