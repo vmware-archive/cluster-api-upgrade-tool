@@ -878,7 +878,7 @@ func generateReplacementMachineName(base, upgradeID string) string {
 func filterOutMachineOwners(ownerRefs []metav1.OwnerReference) []metav1.OwnerReference {
 	filtered := make([]metav1.OwnerReference, 0, len(ownerRefs))
 	for _, owner := range ownerRefs {
-		if owner.Kind == "Machine" {
+		if owner.APIVersion == clusterv1.GroupVersion.String() && owner.Kind == "Machine" {
 			continue
 		}
 		filtered = append(filtered, owner)

@@ -148,7 +148,7 @@ metadata:
 
 func TestMachineOwnerFiltration(t *testing.T) {
 	machineRef := metav1.OwnerReference{
-		APIVersion: "cluster.x-k8s.io/v1alpha2",
+		APIVersion: clusterv1.GroupVersion.String(),
 		Kind:       "Machine",
 		Name:       "Someone",
 		UID:        "abcdefg",
