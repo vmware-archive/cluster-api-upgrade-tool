@@ -33,7 +33,6 @@ import (
 	bootstrapv1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/api/v1alpha2"
 	kubeadmv1beta1 "sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm/kubeadm/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha2"
-	"sigs.k8s.io/cluster-api/controllers/external"
 	"sigs.k8s.io/cluster-api/controllers/noderefutil"
 	"sigs.k8s.io/cluster-api/util/kubeconfig"
 	"sigs.k8s.io/cluster-api/util/patch"
@@ -487,13 +486,15 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 		Namespace:  replacementKey.Namespace,
 		Name:       replacementKey.Name,
 	}
-	exists, _, err := u.resourceExists(replacementRef)
+	obj, err := u.resourceExists(replacementRef)
 	if err != nil {
-		return err
+		if !apierrors.IsNotFound(err) {
+			return errors.WithStack(err)
+		}
 	}
 
 	var replacementMachine *clusterv1.Machine
-	if !exists {
+	if obj == nil {
 		log.Info("New machine does not exist - need to create a new one")
 		replacementMachine = machine.DeepCopy()
 
@@ -873,11 +874,14 @@ func (u *ControlPlaneUpgrader) updateBootstrapConfig(replacementKey ctrlclient.O
 		Namespace:  replacementKey.Namespace,
 		Name:       replacementKey.Name,
 	}
-	exists, obj, err := u.resourceExists(replacementRef)
+	obj, err := u.resourceExists(replacementRef)
 	if err != nil {
-		return nil, err
+		if !apierrors.IsNotFound(err) {
+			return nil, errors.WithStack(err)
+		}
 	}
-	if exists {
+
+	if obj != nil {
 		bootstrap := &bootstrapv1.KubeadmConfig{}
 		err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), bootstrap)
 		if err != nil {
@@ -989,7 +993,7 @@ func (u *ControlPlaneUpgrader) updateSecrets(bootstrap *bootstrapv1.KubeadmConfi
 	return nil
 }
 
-func (u *ControlPlaneUpgrader) resourceExists(ref v1.ObjectReference) (bool, *unstructured.Unstructured, error) {
+func (u *ControlPlaneUpgrader) resourceExists(ref v1.ObjectReference) (*unstructured.Unstructured, error) {
 	obj := new(unstructured.Unstructured)
 	obj.SetAPIVersion(ref.APIVersion)
 	obj.SetKind(ref.Kind)
@@ -998,13 +1002,10 @@ func (u *ControlPlaneUpgrader) resourceExists(ref v1.ObjectReference) (bool, *un
 		Name:      ref.Name,
 	}
 	if err := u.managementClusterClient.Get(context.TODO(), key, obj); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil, nil
-		}
-		return false, nil, errors.WithStack(err)
+		return nil, err
 	}
 
-	return true, obj, nil
+	return obj, nil
 }
 
 func patchRuntimeObject(obj runtime.Object, patch jsonpatch.Patch) (runtime.Object, error) {
@@ -1038,22 +1039,18 @@ func (u *ControlPlaneUpgrader) updateInfrastructureReference(replacementKey ctrl
 		Namespace:  replacementKey.Namespace,
 		Name:       replacementKey.Name,
 	}
-	exists, _, err := u.resourceExists(replacementRef)
+	infra, err := u.resourceExists(replacementRef)
 	if err != nil {
-		return err
+		if !apierrors.IsNotFound(err) {
+			return errors.WithStack(err)
+		}
 	}
-	if exists {
+
+	if infra != nil {
 		return nil
 	}
 
 	// Step 2: if we're here, we need to create it
-
-	// get original infrastructure object
-	infra, err := external.Get(u.managementClusterClient, &ref, u.clusterNamespace)
-	if err != nil {
-		return err
-	}
-
 	// prep the replacement
 	infra.SetResourceVersion("")
 	infra.SetName(replacementKey.Name)
