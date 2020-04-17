@@ -1182,7 +1182,11 @@ func (u *ControlPlaneUpgrader) etcdctl(ctx context.Context, args ...string) (str
 func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, args ...string) (string, string, error) {
 	u.log.Info("Running etcdctl", "pod", pod.Name, "args", strings.Join(args, " "))
 
-	endpoint := fmt.Sprintf("https://%s:2379", pod.Status.PodIP)
+	ip := pod.Status.PodIP
+	if ip == "" {
+		ip = "127.0.0.1"
+	}
+	endpoint := fmt.Sprintf("https://%s:2379", ip)
 
 	fullArgs := []string{
 		"ETCDCTL_API=3",
