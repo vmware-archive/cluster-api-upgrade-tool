@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"reflect"
 	"strconv"
 	"strings"
@@ -1227,9 +1228,12 @@ func (u *ControlPlaneUpgrader) etcdctl(ctx context.Context, args ...string) (str
 func (u *ControlPlaneUpgrader) etcdctlForPod(ctx context.Context, pod *v1.Pod, args ...string) (string, string, error) {
 	u.log.Info("Running etcdctl", "pod", pod.Name, "args", strings.Join(args, " "))
 
-	ip := pod.Status.PodIP
-	if ip == "" {
-		ip = "127.0.0.1"
+	// In certain scenarios, the PodIP might be "unset" (empty) or set to "<nil>"
+	// In the event that the PodIP is not parseable to a valid address, we can
+	// fall back to localhost.
+	ip := net.ParseIP(pod.Status.PodIP)
+	if ip == nil {
+		ip = net.IPv4(127, 0, 0, 1)
 	}
 	endpoint := fmt.Sprintf("https://%s:2379", ip)
 
