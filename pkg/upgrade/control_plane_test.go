@@ -343,6 +343,32 @@ func TestShouldSkipMachine(t *testing.T) {
 	}
 }
 
+func TestPatchMachine(t *testing.T) {
+	machine := &clusterv1.Machine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cp-0-foobar",
+			Labels: map[string]string{
+				"hello": "world",
+			},
+			Annotations: map[string]string{
+				AnnotationMachineNameBase: "cp-0",
+			},
+		},
+	}
+
+	patch, err := jsonpatch.DecodePatch([]byte(`[{ "op": "remove", "path": "/metadata/labels/hello" }]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	patched, err := patchMachine(machine, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assert.Equal(t, map[string]string{}, patched.Labels)
+}
+
 func TestPatchRuntimeObject(t *testing.T) {
 	u := new(unstructured.Unstructured)
 	u.Object = map[string]interface{}{

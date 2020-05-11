@@ -72,6 +72,7 @@ type ControlPlaneUpgrader struct {
 	upgradeID               string
 	oldNodeToEtcdMember     map[string]string
 	secretsUpdated          bool
+	machinePatch            jsonpatch.Patch
 	infrastructurePatch     jsonpatch.Patch
 	bootstrapPatch          jsonpatch.Patch
 	kubeadmConfigMapPatch   jsonpatch.Patch
@@ -142,7 +143,13 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 	infoMessage := fmt.Sprintf("Rerun with `--upgrade-id=%s` if this upgrade fails midway and you want to retry", config.UpgradeID)
 	log.Info(infoMessage)
 
-	var infrastructurePatch, bootstrapPatch, kubeadmConfigMapPatch jsonpatch.Patch
+	var machinePatch, infrastructurePatch, bootstrapPatch, kubeadmConfigMapPatch jsonpatch.Patch
+	if len(config.Patches.Machine) > 0 {
+		machinePatch, err = jsonpatch.DecodePatch([]byte(config.Patches.Machine))
+		if err != nil {
+			return nil, errors.Wrap(err, "error decoding infrastructure patch")
+		}
+	}
 	if len(config.Patches.Infrastructure) > 0 {
 		infrastructurePatch, err = jsonpatch.DecodePatch([]byte(config.Patches.Infrastructure))
 		if err != nil {
@@ -177,6 +184,7 @@ func NewControlPlaneUpgrader(log logr.Logger, config Config) (*ControlPlaneUpgra
 		targetRestConfig:        targetRestConfig,
 		targetKubernetesClient:  targetKubernetesClient,
 		upgradeID:               config.UpgradeID,
+		machinePatch:            machinePatch,
 		infrastructurePatch:     infrastructurePatch,
 		bootstrapPatch:          bootstrapPatch,
 		kubeadmConfigMapPatch:   kubeadmConfigMapPatch,
@@ -503,6 +511,15 @@ func (u *ControlPlaneUpgrader) updateMachine(replacementKey ctrlclient.ObjectKey
 	if obj == nil {
 		log.Info("New machine does not exist - need to create a new one")
 		replacementMachine = machine.DeepCopy()
+
+		// Patch first so we can overwrite any potential interferences with
+		// required behavior
+		if u.machinePatch != nil {
+			replacementMachine, err = patchMachine(replacementMachine, u.machinePatch)
+			if err != nil {
+				return errors.Wrap(err, "error patching Machine")
+			}
+		}
 
 		// have to clear this out so we can create a new machine
 		replacementMachine.ResourceVersion = ""
@@ -1040,6 +1057,14 @@ func (u *ControlPlaneUpgrader) resourceExists(ref v1.ObjectReference) (*unstruct
 	}
 
 	return obj, nil
+}
+
+func patchMachine(machine *clusterv1.Machine, patch jsonpatch.Patch) (*clusterv1.Machine, error) {
+	obj, err := patchRuntimeObject(machine, patch)
+	if err != nil {
+		return nil, err
+	}
+	return obj.(*clusterv1.Machine), nil
 }
 
 func patchRuntimeObject(obj runtime.Object, patch jsonpatch.Patch) (runtime.Object, error) {

@@ -117,6 +117,13 @@ func main() {
 	)
 
 	root.Flags().StringVar(
+		&configFromFlags.Patches.Machine,
+		"machine-patches",
+		"",
+		"JSON patch expression of patches to apply to the machine (optional)",
+	)
+
+	root.Flags().StringVar(
 		&configFromFlags.Patches.Infrastructure,
 		"infrastructure-patches",
 		"",
