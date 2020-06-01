@@ -58,6 +58,12 @@ const (
 	AnnotationUpgradeID = annotationPrefix + "id"
 
 	AnnotationMachineNameBase = annotationPrefix + "machine-name-base"
+
+	// GetNodesClusterRoleName defines the name of the ClusterRole and ClusterRoleBinding to get nodes
+	GetNodesClusterRoleName = "kubeadm:get-nodes"
+
+	// NodeBootstrapTokenAuthGroup specifies which group a Node Bootstrap Token should be authenticated in
+	NodeBootstrapTokenAuthGroup = "system:bootstrappers:kubeadm:default-node-token"
 )
 
 type ControlPlaneUpgrader struct {
@@ -208,6 +214,15 @@ func (u *ControlPlaneUpgrader) Upgrade() error {
 	}
 
 	err = u.updateKubeletRbacIfNeeded(u.desiredVersion)
+	if err != nil {
+		return err
+	}
+
+	// Creates kubeadm cluster role  & bindings for v1.18+
+	// as per https://github.com/kubernetes/kubernetes/commit/b117a928a6c3f650931bdac02a41fca6680548c4
+	// If the cluster role  & bindings already exists this function is a no-op.
+	u.log.Info("Checking cluster role and bindings")
+	err = u.allowBootstrapTokensToGetNodes()
 	if err != nil {
 		return err
 	}
@@ -454,6 +469,71 @@ func (u *ControlPlaneUpgrader) updateKubeletRbacIfNeeded(version semver.Version)
 		return errors.Wrapf(err, "error determining if rolebinding %s exists", roleName)
 	}
 
+	return nil
+}
+
+func (u *ControlPlaneUpgrader) allowBootstrapTokensToGetNodes() error {
+	log := u.log.WithValues("role-name", GetNodesClusterRoleName)
+
+	log.Info("Looking up role")
+	_, err := u.targetKubernetesClient.RbacV1().ClusterRoles().Get(GetNodesClusterRoleName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		// need to create new cluster role
+		newRole :=  &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      GetNodesClusterRoleName,
+				Namespace: metav1.NamespaceSystem,
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					Verbs:     []string{"get"},
+					APIGroups: []string{""},
+					Resources: []string{"nodes"},
+				},
+			},
+		}
+
+		log.Info("Need to create cluster role")
+		_, err := u.targetKubernetesClient.RbacV1().ClusterRoles().Create(newRole)
+		if err != nil && !apierrors.IsAlreadyExists(err) {
+			return errors.Wrapf(err, "error creating cluster role %s", newRole.GetName())
+		}
+		log.Info("Cluster Role creation succeeded")
+
+	} else if err != nil {
+		return errors.Wrapf(err, "error determining if cluster role %s exists", GetNodesClusterRoleName)
+	}
+
+	log.Info("Looking up cluster role binding")
+	_, err = u.targetKubernetesClient.RbacV1().ClusterRoleBindings().Get(GetNodesClusterRoleName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		newClusterRoleBinding := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      GetNodesClusterRoleName,
+				Namespace: metav1.NamespaceSystem,
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     GetNodesClusterRoleName,
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind: rbacv1.GroupKind,
+					Name: NodeBootstrapTokenAuthGroup,
+				},
+			},
+		}
+
+		log.Info("Need to create cluster role binding")
+		_, err = u.targetKubernetesClient.RbacV1().ClusterRoleBindings().Create(newClusterRoleBinding)
+		if err != nil && !apierrors.IsAlreadyExists(err) {
+			return errors.Wrapf(err, "error creating cluster role binding %s", GetNodesClusterRoleName)
+		}
+		log.Info("Cluster role binding creation succeeded")
+	} else if err != nil {
+		return errors.Wrapf(err, "error determining if cluster role binding %s exists", GetNodesClusterRoleName)
+	}
 	return nil
 }
 
