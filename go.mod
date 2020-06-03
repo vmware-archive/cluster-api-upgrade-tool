@@ -18,7 +18,7 @@ require (
 	k8s.io/client-go v0.0.0-20190918200256-06eb1244587a
 	k8s.io/utils v0.0.0-20190809000727-6c36bc71fc4a
 	sigs.k8s.io/cluster-api v0.2.6
-	sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm v0.1.4
+	sigs.k8s.io/cluster-api-bootstrap-provider-kubeadm v0.1.6
 	sigs.k8s.io/controller-runtime v0.3.0
 	sigs.k8s.io/yaml v1.1.0
 )
