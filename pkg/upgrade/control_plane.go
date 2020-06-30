@@ -1427,7 +1427,7 @@ func (u *ControlPlaneUpgrader) UpdateProviderIDsToNodes() error {
 			id = providerID.ID()
 		} else {
 			u.log.Error(err, "failed to parse provider id", "id", node.Spec.ProviderID, "node", node.Name)
-			// unable to parse provider ID with whitelist of provider ID formats. Use original provider ID
+			// unable to parse provider ID with allowlist of provider ID formats. Use original provider ID
 			id = node.Spec.ProviderID
 		}
 		pairs[id] = &node
