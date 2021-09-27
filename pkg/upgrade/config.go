@@ -33,6 +33,7 @@ type TargetClusterConfig struct {
 // PatchConfig contains JSON patch documents for modifying a Machine's referenced infrastructure and bootstrap
 // resources.
 type PatchConfig struct {
+	Machine          string `json:"machine"`
 	Infrastructure   string `json:"infrastructure"`
 	Bootstrap        string `json:"bootstrap"`
 	KubeadmConfigMap string `json:"kubeadmConfigMap"`
